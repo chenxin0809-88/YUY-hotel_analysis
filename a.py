@@ -8,8 +8,8 @@ from collections import Counter
 import warnings
 warnings.filterwarnings('ignore')
 
-# 设置中文字体
-plt.rcParams['font.sans-serif'] = ['WenQuanYi Zen Hei', 'SimHei', 'Arial Unicode MS']
+# 设置中文字体（适配不同系统）
+plt.rcParams['font.sans-serif'] = ['WenQuanYi Zen Hei', 'SimHei', 'Arial Unicode MS', 'DejaVu Sans']
 plt.rcParams['axes.unicode_minus'] = False
 
 # 设置页面配置
@@ -107,17 +107,18 @@ def load_and_preprocess_data(file_path):
         df['购买到预约天数差'] = df['购买到预约时间差'] / 24
     
     # 筛选有效数据
-    valid_df = df.dropna(subset=['预约房型', '入住日期', '预约时间'])
+    required_cols = ['预约房型', '入住日期', '预约时间']
+    valid_df = df.dropna(subset=[col for col in required_cols if col in df.columns])
     
     return df, valid_df
 
 # ----------------------
-# 2. 酒店基础数据配置
+# 2. 酒店基础数据配置（修复版：使用表单避免DOM冲突）
 # ----------------------
 def configure_hotel_rooms():
-    """配置酒店房间数据"""
+    """使用表单重写动态配置，避免removeChild报错"""
     st.sidebar.subheader("🏨 酒店房间配置")
-    
+
     # 总房量
     total_rooms = st.sidebar.number_input(
         "酒店总房间数",
@@ -126,35 +127,59 @@ def configure_hotel_rooms():
         step=1,
         help="输入酒店的总房间数量"
     )
-    
-    # 房型配置
+
     st.sidebar.markdown("### 各房型房间数配置")
-    room_config = {}
+    st.sidebar.info("💡 点击'保存配置'后生效，避免频繁刷新")
+
+    # 初始化房型列表（如果session_state中没有）
+    if 'room_types' not in st.session_state:
+        st.session_state.room_types = [
+            {'name': '花园双床房', 'rooms': 20},
+            {'name': '花园大床房', 'rooms': 20},
+            {'name': '花园家庭房', 'rooms': 20},
+            {'name': '花园豪华双床房', 'rooms': 20},
+            {'name': '花园豪华大床房', 'rooms': 20}
+        ]
+
+    # 使用表单批量处理房型配置
+    with st.sidebar.form("room_config_form", clear_on_submit=False):
+        # 显示现有房型
+        room_config_temp = []
+        for i, room in enumerate(st.session_state.room_types):
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                new_name = st.text_input(f"房型名称 {i+1}", value=room['name'], key=f"room_name_{i}")
+            with col2:
+                new_count = st.number_input(f"房间数 {i+1}", min_value=1, value=room['rooms'], key=f"room_count_{i}")
+            room_config_temp.append({'name': new_name, 'rooms': new_count})
+        
+        # 操作按钮
+        col_ops1, col_ops2 = st.columns(2)
+        with col_ops1:
+            add_btn = st.form_submit_button("➕ 添加新房型")
+        with col_ops2:
+            del_btn = st.form_submit_button("🗑️ 删除最后一个房型")
+        
+        # 保存配置按钮
+        save_btn = st.form_submit_button("💾 保存所有配置")
+
+    # 处理添加/删除操作（单次rerun，避免循环）
+    if add_btn:
+        st.session_state.room_types.append({'name': f'新房型{len(st.session_state.room_types)+1}', 'rooms': 10})
+        st.rerun()
     
-    # 先从数据中获取房型列表（如果已上传数据）
-    if 'valid_df' in st.session_state and len(st.session_state.valid_df) > 0:
-        room_types = st.session_state.valid_df['预约房型'].unique()
-        for room_type in room_types:
-            room_config[room_type] = st.sidebar.number_input(
-                f"{room_type}房间数",
-                min_value=1,
-                value=20,
-                step=1,
-                key=f"room_{room_type}"
-            )
-    else:
-        # 默认房型配置
-        default_rooms = ['花园双床房', '花园大床房', '花园家庭房', '花园豪华双床房', '花园豪华大床房']
-        for room_type in default_rooms:
-            room_config[room_type] = st.sidebar.number_input(
-                f"{room_type}房间数",
-                min_value=1,
-                value=20,
-                step=1,
-                key=f"room_{room_type}"
-            )
+    if del_btn and len(st.session_state.room_types) > 1:
+        st.session_state.room_types.pop()
+        st.rerun()
     
-    # 保存配置到session state
+    # 保存最终配置
+    if save_btn:
+        st.session_state.room_types = room_config_temp
+    
+    # 构建房型配置字典
+    room_config = {room['name']: room['rooms'] for room in st.session_state.room_types}
+    
+    # 保存到session state
     st.session_state['hotel_config'] = {
         'total_rooms': total_rooms,
         'room_config': room_config
@@ -163,7 +188,23 @@ def configure_hotel_rooms():
     return total_rooms, room_config
 
 # ----------------------
-# 3. 核心分析函数
+# 3. 订单状态筛选器
+# ----------------------
+def add_order_status_filter(df):
+    """添加订单状态筛选器"""
+    if '预约状态' in df.columns:
+        status_options = df['预约状态'].unique().tolist()
+        selected_status = st.sidebar.multiselect(
+            "筛选订单状态",
+            status_options,
+            default=status_options,
+            help="选择要分析的订单状态"
+        )
+        return selected_status
+    return None
+
+# ----------------------
+# 4. 核心分析函数
 # ----------------------
 def calculate_occ(room_nights, total_rooms, date_range_days):
     """计算入住率OCC"""
@@ -173,23 +214,43 @@ def calculate_occ(room_nights, total_rooms, date_range_days):
     return round(occ, 2)
 
 def analyze_room_type_performance(df, room_config):
-    """房型深度分析"""
+    """房型深度分析（适配动态房型）"""
+    if '预约房型' not in df.columns or '入住日期' not in df.columns:
+        return None
+    
     # 基础统计
     room_analysis = df.groupby('预约房型').agg({
         '入住天数': ['sum', 'mean', 'count'],  # 总间晚数、平均间晚数、订单数
-        '订单实收': ['sum', 'mean'],  # 总收入、平均订单金额
-        'ADR': ['mean', 'median'],  # 平均ADR、中位ADR
+        '订单实收': ['sum', 'mean'] if '订单实收' in df.columns else ['count'],  # 总收入、平均订单金额
+        'ADR': ['mean', 'median'] if 'ADR' in df.columns else ['count'],  # 平均ADR、中位ADR
         '入住日期': ['min', 'max']  # 最早/最晚入住日期
     }).round(2)
     
-    room_analysis.columns = ['总间晚数', '平均间晚数', '订单数', '总收入', '平均订单金额', 
-                           '平均ADR', '中位ADR', '最早入住日期', '最晚入住日期']
+    # 统一列名
+    cols = []
+    if '入住天数' in room_analysis.columns.levels[0]:
+        cols.extend(['总间晚数', '平均间晚数', '订单数'])
+    if '订单实收' in room_analysis.columns.levels[0]:
+        cols.extend(['总收入', '平均订单金额'])
+    if 'ADR' in room_analysis.columns.levels[0]:
+        cols.extend(['平均ADR', '中位ADR'])
+    cols.extend(['最早入住日期', '最晚入住日期'])
+    room_analysis.columns = cols
     
-    # 计算OCC
+    # 计算日期范围
     date_start = df['入住日期'].min()
     date_end = df['入住日期'].max()
-    date_range_days = (date_end - date_start).days + 1
+    date_range_days = max(1, (date_end - date_start).days + 1)
     
+    # 合并动态配置的房型
+    all_rooms = list(room_config.keys())
+    for room in all_rooms:
+        if room not in room_analysis.index:
+            empty_row = [0]*len(room_analysis.columns)
+            empty_row[-2:] = [pd.NaT, pd.NaT]  # 日期列设为NaT
+            room_analysis.loc[room] = empty_row
+    
+    # 添加房型配置和OCC
     room_analysis['房型房量'] = room_analysis.index.map(lambda x: room_config.get(x, 0))
     room_analysis['房型OCC(%)'] = room_analysis.apply(
         lambda row: calculate_occ(row['总间晚数'], row['房型房量'], date_range_days),
@@ -198,342 +259,296 @@ def analyze_room_type_performance(df, room_config):
     
     # 计算占比
     total_room_nights = room_analysis['总间晚数'].sum()
-    total_revenue = room_analysis['总收入'].sum()
-    room_analysis['间晚占比(%)'] = (room_analysis['总间晚数'] / total_room_nights * 100).round(2)
-    room_analysis['收入占比(%)'] = (room_analysis['总收入'] / total_revenue * 100).round(2)
+    total_revenue = room_analysis['总收入'].sum() if '总收入' in room_analysis.columns else 1
+    if total_room_nights > 0:
+        room_analysis['间晚占比(%)'] = (room_analysis['总间晚数'] / total_room_nights * 100).round(2)
+    else:
+        room_analysis['间晚占比(%)'] = 0
+    
+    if total_revenue > 0 and '总收入' in room_analysis.columns:
+        room_analysis['收入占比(%)'] = (room_analysis['总收入'] / total_revenue * 100).round(2)
+    else:
+        room_analysis['收入占比(%)'] = 0
     
     # 格式化日期
-    room_analysis['最早入住日期'] = room_analysis['最早入住日期'].dt.strftime('%Y-%m-%d')
-    room_analysis['最晚入住日期'] = room_analysis['最晚入住日期'].dt.strftime('%Y-%m-%d')
+    for col in ['最早入住日期', '最晚入住日期']:
+        room_analysis[col] = room_analysis[col].dt.strftime('%Y-%m-%d')
     
     return room_analysis
 
-def analyze_booking_trend(df, time_unit='day'):
-    """分析预订趋势"""
-    if time_unit == 'day':
-        trend_df = df.groupby(df['预约时间'].dt.date).agg({
-            '预约房型': 'count',
-            '入住天数': 'sum'
-        })
-        trend_df.index = pd.to_datetime(trend_df.index)
-        trend_title = '按日预订趋势'
-    elif time_unit == 'week':
-        trend_df = df.groupby(df['预约时间'].dt.isocalendar().week).agg({
-            '预约房型': 'count',
-            '入住天数': 'sum'
-        })
-        trend_title = '按周预订趋势'
+def plot_booking_trend(df):
+    """预订趋势分析图表"""
+    if '预约时间' not in df.columns:
+        return None
     
-    # 按房型拆分的趋势
-    room_trends = {}
-    for room_type in df['预约房型'].unique():
-        room_df = df[df['预约房型'] == room_type]
-        if time_unit == 'day':
-            room_trend = room_df.groupby(room_df['预约时间'].dt.date)[['入住天数']].sum()
-            room_trend.index = pd.to_datetime(room_trend.index)
-        else:
-            room_trend = room_df.groupby(room_df['预约时间'].dt.isocalendar().week)[['入住天数']].sum()
-        room_trends[room_type] = room_trend
+    # 按日期统计预订量
+    trend_data = df.groupby(df['预约时间'].dt.date).size()
     
-    return trend_df, room_trends, trend_title
-
-def analyze_daily_room_nights(df):
-    """分析每日入住间夜及房型构成"""
-    # 按日期和房型统计间夜数
-    daily_room_nights = df.groupby([df['入住日期'].dt.date, '预约房型'])['入住天数'].sum().unstack(fill_value=0)
+    # 创建图表
+    fig, ax = plt.subplots(figsize=(14, 6))
+    ax.plot(trend_data.index, trend_data.values, 'o-', color='#FF6B6B', linewidth=2, markersize=4)
     
-    # 计算每日总间夜
-    daily_room_nights['总计'] = daily_room_nights.sum(axis=1)
+    # 样式设置
+    ax.set_title('预约量趋势（按日期）', fontsize=14, fontweight='bold', pad=20)
+    ax.set_xlabel('日期', fontsize=12)
+    ax.set_ylabel('预约订单数', fontsize=12)
+    ax.grid(True, alpha=0.3)
     
-    # 标记节假日
-    daily_room_nights['是否节假日'] = [is_holiday(pd.to_datetime(date)) for date in daily_room_nights.index]
-    
-    return daily_room_nights
-
-def analyze_weekday_distribution(df):
-    """分析星期几入住分布"""
-    weekday_dist = df.groupby('入住星期中文').agg({
-        '入住天数': ['sum', 'mean', 'count'],
-        '订单实收': 'sum',
-        'ADR': 'mean'
-    }).round(2)
-    
-    # 重新排序
-    weekday_order = ['星期一', '星期二', '星期三', '星期四', '星期五', '星期六', '星期日']
-    weekday_dist = weekday_dist.reindex(weekday_order)
-    
-    weekday_dist.columns = ['总间晚数', '平均间晚数', '订单数', '总收入', '平均ADR']
-    
-    # 计算占比
-    total_room_nights = weekday_dist['总间晚数'].sum()
-    total_orders = weekday_dist['订单数'].sum()
-    total_revenue = weekday_dist['总收入'].sum()
-    
-    weekday_dist['间晚占比(%)'] = (weekday_dist['总间晚数'] / total_room_nights * 100).round(2)
-    weekday_dist['订单占比(%)'] = (weekday_dist['订单数'] / total_orders * 100).round(2)
-    weekday_dist['收入占比(%)'] = (weekday_dist['总收入'] / total_revenue * 100).round(2)
-    
-    return weekday_dist
-
-def analyze_purchase_to_booking(df):
-    """分析购买到预约的时间差"""
-    time_diff_analysis = df.dropna(subset=['购买到预约时间差']).agg({
-        '购买到预约时间差': ['count', 'mean', 'median', 'min', 'max', 'std'],
-        '购买到预约天数差': ['mean', 'median', 'min', 'max', 'std']
-    }).round(2)
-    
-    # 时间差区间分析
-    bins = [-1, 0, 1, 6, 12, 24, 48, 1000]
-    labels = ['即时预约(≤0h)', '0-1小时', '1-6小时', '6-12小时', '12-24小时', '1-2天', '>2天']
-    df['时间差区间'] = pd.cut(df['购买到预约时间差'], bins=bins, labels=labels)
-    
-    time_diff_by_range = df.groupby('时间差区间').agg({
-        '购买到预约时间差': ['count', 'mean'],
-        '订单实收': 'mean',
-        'ADR': 'mean'
-    }).round(2)
-    
-    time_diff_by_range.columns = ['订单数', '平均时间差(小时)', '平均订单金额', '平均ADR']
-    time_diff_by_range['订单占比(%)'] = (time_diff_by_range['订单数'] / time_diff_by_range['订单数'].sum() * 100).round(2)
-    
-    return time_diff_analysis, time_diff_by_range
-
-# ----------------------
-# 4. 可视化函数
-# ----------------------
-def plot_room_type_performance(room_analysis):
-    """绘制房型性能分析图表"""
-    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
-    
-    # 1. 各房型总间晚数和平均ADR
-    x = range(len(room_analysis))
-    width = 0.35
-    
-    bars1 = ax1.bar([i - width/2 for i in x], room_analysis['总间晚数'], width, 
-                   label='总间晚数', color='#FF6B6B', alpha=0.8)
-    ax1_twin = ax1.twinx()
-    line1 = ax1_twin.plot(x, room_analysis['平均ADR'], 'o-', color='#4ECDC4', linewidth=2, label='平均ADR')
-    
-    ax1.set_title('各房型总间晚数与平均ADR对比', fontweight='bold', fontsize=12)
-    ax1.set_xlabel('房型')
-    ax1.set_ylabel('总间晚数', color='#FF6B6B')
-    ax1_twin.set_ylabel('平均ADR (¥)', color='#4ECDC4')
-    ax1.set_xticks(x)
-    ax1.set_xticklabels(room_analysis.index, rotation=45, ha='right')
-    ax1.grid(True, alpha=0.3)
-    
-    # 添加数值标签
-    for bar in bars1:
-        height = bar.get_height()
-        ax1.text(bar.get_x() + bar.get_width()/2., height + 5,
-                f'{int(height)}', ha='center', va='bottom', fontsize=9)
-    
-    # 2. 各房型OCC和间晚占比
-    bars2 = ax2.bar([i - width/2 for i in x], room_analysis['房型OCC(%)'], width, 
-                   label='房型OCC(%)', color='#45B7D1', alpha=0.8)
-    ax2_twin = ax2.twinx()
-    line2 = ax2_twin.plot(x, room_analysis['间晚占比(%)'], 's-', color='#96CEB4', linewidth=2, label='间晚占比(%)')
-    
-    ax2.set_title('各房型OCC与间晚占比', fontweight='bold', fontsize=12)
-    ax2.set_xlabel('房型')
-    ax2.set_ylabel('房型OCC (%)', color='#45B7D1')
-    ax2_twin.set_ylabel('间晚占比 (%)', color='#96CEB4')
-    ax2.set_xticks(x)
-    ax2.set_xticklabels(room_analysis.index, rotation=45, ha='right')
-    ax2.grid(True, alpha=0.3)
-    
-    # 3. 各房型收入占比饼图
-    colors = plt.cm.Set3(np.linspace(0, 1, len(room_analysis)))
-    wedges, texts, autotexts = ax3.pie(room_analysis['收入占比(%)'], labels=room_analysis.index, 
-                                       autopct='%1.1f%%', colors=colors, startangle=90)
-    ax3.set_title('各房型收入占比', fontweight='bold', fontsize=12)
-    
-    # 4. 平均间晚数vs平均ADR散点图
-    scatter = ax4.scatter(room_analysis['平均间晚数'], room_analysis['平均ADR'], 
-                         s=room_analysis['订单数']/2, alpha=0.7, c=colors)
-    ax4.set_title('平均间晚数 vs 平均ADR（气泡大小=订单数）', fontweight='bold', fontsize=12)
-    ax4.set_xlabel('平均间晚数')
-    ax4.set_ylabel('平均ADR (¥)')
-    ax4.grid(True, alpha=0.3)
-    
-    # 添加房型标签
-    for i, room in enumerate(room_analysis.index):
-        ax4.annotate(room, (room_analysis['平均间晚数'].iloc[i], room_analysis['平均ADR'].iloc[i]),
-                    xytext=(5, 5), textcoords='offset points', fontsize=8)
+    # 日期格式化
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
+    ax.xaxis.set_major_locator(mdates.DayLocator(interval=2))
+    plt.xticks(rotation=45)
     
     plt.tight_layout()
     return fig
 
-def plot_booking_trend(trend_df, room_trends, trend_title):
-    """绘制预订趋势图表"""
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(16, 10))
+def plot_room_night_analysis(df):
+    """入住间夜分析"""
+    if '入住日期' not in df.columns or '入住天数' not in df.columns:
+        return None
     
-    # 1. 总体预订趋势
-    ax1.plot(trend_df.index, trend_df['预约房型'], 'o-', color='#FF6B6B', linewidth=2, label='订单数')
-    ax1_twin = ax1.twinx()
-    ax1_twin.plot(trend_df.index, trend_df['入住天数'], 's-', color='#4ECDC4', linewidth=2, label='间晚数')
+    # 按日期统计间夜数
+    night_data = df.groupby(df['入住日期'].dt.date)['入住天数'].sum()
     
-    ax1.set_title(f'{trend_title} - 总体', fontweight='bold', fontsize=12)
-    ax1.set_xlabel('时间')
-    ax1.set_ylabel('订单数', color='#FF6B6B')
-    ax1_twin.set_ylabel('间晚数', color='#4ECDC4')
-    ax1.grid(True, alpha=0.3)
-    ax1.legend(loc='upper left')
-    ax1_twin.legend(loc='upper right')
+    # 创建图表
+    fig, ax = plt.subplots(figsize=(14, 6))
+    ax.bar(night_data.index, night_data.values, color='#4ECDC4', alpha=0.8, width=0.8)
     
-    # 2. 各房型预订趋势
-    colors = plt.cm.Set2(np.linspace(0, 1, len(room_trends)))
-    for i, (room_type, room_trend) in enumerate(room_trends.items()):
-        ax2.plot(room_trend.index, room_trend['入住天数'], 'o-', linewidth=2, 
-                label=room_type, color=colors[i], alpha=0.8)
+    # 样式设置
+    ax.set_title('每日入住间夜数', fontsize=14, fontweight='bold', pad=20)
+    ax.set_xlabel('日期', fontsize=12)
+    ax.set_ylabel('间夜数', fontsize=12)
+    ax.grid(True, alpha=0.3, axis='y')
     
-    ax2.set_title(f'{trend_title} - 各房型间晚数', fontweight='bold', fontsize=12)
-    ax2.set_xlabel('时间')
-    ax2.set_ylabel('间晚数')
-    ax2.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-    ax2.grid(True, alpha=0.3)
+    # 日期格式化
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
+    ax.xaxis.set_major_locator(mdates.DayLocator(interval=2))
+    plt.xticks(rotation=45)
     
     plt.tight_layout()
     return fig
 
-def plot_daily_room_nights(daily_room_nights):
-    """绘制每日间夜及房型构成图表"""
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(16, 10))
+def plot_checkin_time_analysis(df):
+    """入住时间分析"""
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(14, 10))
     
-    # 1. 每日总间夜（节假日标红）
-    dates = pd.to_datetime(daily_room_nights.index)
-    holiday_mask = daily_room_nights['是否节假日']
+    # 1. 按星期分析
+    if '入住星期中文' in df.columns:
+        week_data = df['入住星期中文'].value_counts()
+        week_order = ['星期一', '星期二', '星期三', '星期四', '星期五', '星期六', '星期日']
+        week_data = week_data.reindex(week_order, fill_value=0)
+        ax1.bar(week_data.index, week_data.values, color='#45B7D1', alpha=0.8)
+        ax1.set_title('入住星期分布', fontweight='bold')
+        ax1.tick_params(axis='x', rotation=45)
     
-    # 绘制非节假日
-    ax1.plot(dates[~holiday_mask], daily_room_nights.loc[~holiday_mask, '总计'], 
-            'o-', color='#4ECDC4', linewidth=2, label='非节假日', alpha=0.8)
-    # 绘制节假日（标红）
-    if holiday_mask.any():
-        ax1.plot(dates[holiday_mask], daily_room_nights.loc[holiday_mask, '总计'], 
-                'o-', color='red', linewidth=2, markersize=8, label='节假日', alpha=0.8)
+    # 2. 按月分析
+    if '入住月份' in df.columns:
+        month_data = df['入住月份'].value_counts().sort_index()
+        ax2.bar(month_data.index, month_data.values, color='#96CEB4', alpha=0.8)
+        ax2.set_title('入住月份分布', fontweight='bold')
+        ax2.set_xlabel('月份')
+        ax2.set_xticks(range(1, 13))
     
-    ax1.set_title('每日入住总间夜数（节假日标红）', fontweight='bold', fontsize=12)
-    ax1.set_xlabel('日期')
-    ax1.set_ylabel('总间夜数')
+    # 3. 节假日vs工作日
+    if '是否节假日' in df.columns:
+        holiday_data = df['是否节假日'].value_counts()
+        labels = ['工作日', '节假日'] if True in holiday_data.index else ['所有日期']
+        values = [holiday_data.get(False, 0), holiday_data.get(True, 0)] if True in holiday_data.index else [len(df)]
+        ax3.pie(values, labels=labels, autopct='%1.1f%%', colors=['#FFEAA7', '#FD79A8'], startangle=90)
+        ax3.set_title('节假日vs工作日入住占比', fontweight='bold')
+    
+    # 4. 按小时分析（预约时间）
+    if '预约小时' in df.columns:
+        hour_data = df['预约小时'].value_counts().sort_index()
+        ax4.plot(hour_data.index, hour_data.values, 'o-', color='#6C5CE7', linewidth=2)
+        ax4.set_title('预约小时分布', fontweight='bold')
+        ax4.set_xlabel('小时')
+        ax4.set_xticks(range(0, 24, 2))
+    
+    plt.tight_layout()
+    return fig
+
+def plot_purchase_booking_gap(df):
+    """购买预约时间差分析"""
+    if '购买到预约时间差' not in df.columns:
+        return None
+    
+    # 过滤有效数据
+    gap_data = df['购买到预约时间差'].dropna()
+    gap_data = gap_data[gap_data >= 0]  # 只保留正数
+    
+    if len(gap_data) == 0:
+        return None
+    
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+    
+    # 1. 直方图
+    ax1.hist(gap_data, bins=20, color='#A29BFE', alpha=0.7, edgecolor='black')
+    ax1.set_title('购买到预约时间差分布（小时）', fontweight='bold')
+    ax1.set_xlabel('小时')
+    ax1.set_ylabel('订单数')
     ax1.grid(True, alpha=0.3)
+    
+    # 2. 按天数分组
+    gap_days = gap_data / 24
+    bins = [0, 1, 3, 7, 15, 30, 90, float('inf')]
+    labels = ['0-1天', '1-3天', '3-7天', '7-15天', '15-30天', '30-90天', '90天以上']
+    gap_groups = pd.cut(gap_days, bins=bins, labels=labels, right=False)
+    group_counts = gap_groups.value_counts()
+    
+    ax2.bar(group_counts.index, group_counts.values, color='#FD79A8', alpha=0.8)
+    ax2.set_title('购买到预约时间差分组统计', fontweight='bold')
+    ax2.tick_params(axis='x', rotation=45)
+    
+    plt.tight_layout()
+    return fig
+
+def plot_occ_analysis(df, total_rooms):
+    """OCC分析"""
+    if '入住日期' not in df.columns or '入住天数' not in df.columns:
+        return None
+    
+    # 按日期计算OCC
+    date_start = df['入住日期'].min()
+    date_end = df['入住日期'].max()
+    date_range = pd.date_range(start=date_start, end=date_end)
+    
+    occ_data = []
+    for date in date_range:
+        daily_df = df[df['入住日期'].dt.date == date.date()]
+        daily_nights = daily_df['入住天数'].sum()
+        daily_occ = calculate_occ(daily_nights, total_rooms, 1)
+        occ_data.append(daily_occ)
+    
+    # 创建图表
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10))
+    
+    # 1. 每日OCC趋势
+    ax1.plot(date_range, occ_data, 'o-', color='#E17055', linewidth=2, markersize=4)
+    ax1.set_title('每日OCC趋势', fontsize=14, fontweight='bold')
+    ax1.set_ylabel('OCC (%)')
+    ax1.set_ylim(0, 100)
+    ax1.grid(True, alpha=0.3)
+    ax1.axhline(y=np.mean(occ_data), color='red', linestyle='--', alpha=0.7, label=f'平均OCC: {np.mean(occ_data):.1f}%')
     ax1.legend()
     
-    # 格式化x轴日期
-    ax1.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
-    ax1.xaxis.set_major_locator(mdates.DayLocator(interval=2))
-    plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45)
-    
-    # 2. 每日房型构成堆叠图
-    room_columns = [col for col in daily_room_nights.columns if col not in ['总计', '是否节假日']]
-    daily_room_nights[room_columns].plot(kind='area', stacked=True, ax=ax2, 
-                                        colormap='Set2', alpha=0.8)
-    
-    ax2.set_title('每日入住间夜数房型构成', fontweight='bold', fontsize=12)
-    ax2.set_xlabel('日期')
-    ax2.set_ylabel('间夜数')
-    ax2.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    # 2. OCC分布
+    ax2.hist(occ_data, bins=15, color='#00B894', alpha=0.7, edgecolor='black')
+    ax2.set_title('OCC值分布', fontsize=14, fontweight='bold')
+    ax2.set_xlabel('OCC (%)')
+    ax2.set_ylabel('天数')
     ax2.grid(True, alpha=0.3)
-    
-    # 格式化x轴日期
-    ax2.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
-    ax2.xaxis.set_major_locator(mdates.DayLocator(interval=2))
-    plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45)
     
     plt.tight_layout()
     return fig
 
-def plot_weekday_distribution(weekday_dist):
-    """绘制星期几入住分布图表"""
-    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 10))
+def analyze_packages(df):
+    """按商品ID分析套餐"""
+    if '商品ID' not in df.columns:
+        return None, None
     
-    # 1. 星期几总间晚数
-    x = range(len(weekday_dist))
-    bars1 = ax1.bar(x, weekday_dist['总间晚数'], color='#FF6B6B', alpha=0.8)
-    ax1.set_title('星期几入住总间晚数', fontweight='bold', fontsize=12)
-    ax1.set_xlabel('星期')
-    ax1.set_ylabel('总间晚数')
-    ax1.set_xticks(x)
-    ax1.set_xticklabels(weekday_dist.index)
-    ax1.grid(True, alpha=0.3)
+    # 按商品ID分组
+    agg_dict = {
+        '商品名称': 'first',  # 套餐名称
+        '订单ID': 'count',    # 订单数
+        '用户实付金额': ['sum', 'mean', 'median'] if '用户实付金额' in df.columns else ['count'],  # 收入和价格
+        '入住天数': ['sum', 'mean'] if '入住天数' in df.columns else ['count'],  # 间晚数
+        '预约时间': ['min', 'max']  # 时间范围
+    }
     
-    # 添加数值标签
-    for bar in bars1:
-        height = bar.get_height()
-        ax1.text(bar.get_x() + bar.get_width()/2., height + 5,
-                f'{int(height)}', ha='center', va='bottom')
+    package_analysis = df.groupby('商品ID').agg(agg_dict).round(2)
     
-    # 2. 星期几平均ADR
-    bars2 = ax2.bar(x, weekday_dist['平均ADR'], color='#4ECDC4', alpha=0.8)
-    ax2.set_title('星期几入住平均ADR', fontweight='bold', fontsize=12)
-    ax2.set_xlabel('星期')
-    ax2.set_ylabel('平均ADR (¥)')
-    ax2.set_xticks(x)
-    ax2.set_xticklabels(weekday_dist.index)
-    ax2.grid(True, alpha=0.3)
+    # 整理列名
+    cols = []
+    cols.extend(['套餐名称', '订单数'])
+    if '用户实付金额' in package_analysis.columns.levels[0]:
+        cols.extend(['总收入', '平均价格', '中位价格'])
+    if '入住天数' in package_analysis.columns.levels[0]:
+        cols.extend(['总间晚数', '平均间晚数'])
+    cols.extend(['最早预约时间', '最晚预约时间'])
+    package_analysis.columns = cols
     
-    # 添加数值标签
-    for bar in bars2:
-        height = bar.get_height()
-        ax2.text(bar.get_x() + bar.get_width()/2., height + 10,
-                f'¥{int(height)}', ha='center', va='bottom')
+    # 计算占比
+    total_orders = package_analysis['订单数'].sum()
+    total_revenue = package_analysis['总收入'].sum() if '总收入' in package_analysis.columns else 1
     
-    # 3. 星期几订单占比
-    ax3.pie(weekday_dist['订单占比(%)'], labels=weekday_dist.index, autopct='%1.1f%%',
-           colors=plt.cm.Set3(np.linspace(0, 1, 7)), startangle=90)
-    ax3.set_title('星期几入住订单占比', fontweight='bold', fontsize=12)
+    if total_orders > 0:
+        package_analysis['订单占比(%)'] = (package_analysis['订单数'] / total_orders * 100).round(2)
+    else:
+        package_analysis['订单占比(%)'] = 0
     
-    # 4. 星期几间晚占比vs收入占比
+    if total_revenue > 0 and '总收入' in package_analysis.columns:
+        package_analysis['收入占比(%)'] = (package_analysis['总收入'] / total_revenue * 100).round(2)
+    else:
+        package_analysis['收入占比(%)'] = 0
+    
+    # 格式化时间
+    for col in ['最早预约时间', '最晚预约时间']:
+        package_analysis[col] = package_analysis[col].dt.strftime('%Y-%m-%d %H:%M')
+    
+    # 套餐趋势分析
+    package_trend = None
+    if '预约时间' in df.columns:
+        package_trend = df.groupby([df['预约时间'].dt.date, '商品ID']).size().unstack(fill_value=0)
+    
+    return package_analysis, package_trend
+
+def plot_package_analysis(package_analysis, package_trend):
+    """绘制套餐分析图表"""
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
+    
+    # 1. 套餐订单数和收入占比
+    x = range(len(package_analysis))
     width = 0.35
-    bars4_1 = ax4.bar([i - width/2 for i in x], weekday_dist['间晚占比(%)'], width, 
-                     label='间晚占比', color='#45B7D1', alpha=0.8)
-    bars4_2 = ax4.bar([i + width/2 for i in x], weekday_dist['收入占比(%)'], width, 
-                     label='收入占比', color='#96CEB4', alpha=0.8)
     
-    ax4.set_title('星期几入住间晚占比vs收入占比', fontweight='bold', fontsize=12)
-    ax4.set_xlabel('星期')
-    ax4.set_ylabel('占比 (%)')
-    ax4.set_xticks(x)
-    ax4.set_xticklabels(weekday_dist.index)
-    ax4.legend()
-    ax4.grid(True, alpha=0.3)
+    bars1 = ax1.bar([i - width/2 for i in x], package_analysis['订单数'], width, 
+                   label='订单数', color='#FF6B6B', alpha=0.8)
+    ax1_twin = ax1.twinx()
+    line1 = ax1_twin.plot(x, package_analysis['收入占比(%)'], 'o-', color='#4ECDC4', linewidth=2, label='收入占比(%)')
     
-    plt.tight_layout()
-    return fig
-
-def plot_purchase_to_booking(time_diff_by_range):
-    """绘制购买到预约时间差分析图表"""
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
-    
-    # 1. 各时间区间订单数分布
-    x = range(len(time_diff_by_range))
-    bars1 = ax1.bar(x, time_diff_by_range['订单数'], color='#FF6B6B', alpha=0.8)
-    ax1.set_title('购买到预约时间差区间订单数分布', fontweight='bold', fontsize=12)
-    ax1.set_xlabel('时间差区间')
-    ax1.set_ylabel('订单数')
+    ax1.set_title('各套餐订单数与收入占比', fontweight='bold', fontsize=12)
+    ax1.set_xlabel('套餐ID')
+    ax1.set_ylabel('订单数', color='#FF6B6B')
+    ax1_twin.set_ylabel('收入占比 (%)', color='#4ECDC4')
     ax1.set_xticks(x)
-    ax1.set_xticklabels(time_diff_by_range.index, rotation=45, ha='right')
+    ax1.set_xticklabels([f"套餐{pid}" for pid in package_analysis.index], rotation=45, ha='right')
     ax1.grid(True, alpha=0.3)
     
-    # 添加数值标签
-    for bar in bars1:
-        height = bar.get_height()
-        ax1.text(bar.get_x() + bar.get_width()/2., height + 1,
-                f'{int(height)}', ha='center', va='bottom')
+    # 2. 套餐平均价格和间晚数
+    if '平均价格' in package_analysis.columns and '总间晚数' in package_analysis.columns:
+        bars2 = ax2.bar([i - width/2 for i in x], package_analysis['平均价格'], width, 
+                       label='平均价格', color='#45B7D1', alpha=0.8)
+        ax2_twin = ax2.twinx()
+        line2 = ax2_twin.plot(x, package_analysis['总间晚数'], 's-', color='#96CEB4', linewidth=2, label='总间晚数')
+        
+        ax2.set_title('各套餐平均价格与总间晚数', fontweight='bold', fontsize=12)
+        ax2.set_xlabel('套餐ID')
+        ax2.set_ylabel('平均价格 (¥)', color='#45B7D1')
+        ax2_twin.set_ylabel('总间晚数', color='#96CEB4')
+        ax2.set_xticks(x)
+        ax2.set_xticklabels([f"套餐{pid}" for pid in package_analysis.index], rotation=45, ha='right')
+        ax2.grid(True, alpha=0.3)
     
-    # 2. 各时间区间平均ADR
-    bars2 = ax2.bar(x, time_diff_by_range['平均ADR'], color='#4ECDC4', alpha=0.8)
-    ax2.set_title('购买到预约时间差区间平均ADR', fontweight='bold', fontsize=12)
-    ax2.set_xlabel('时间差区间')
-    ax2.set_ylabel('平均ADR (¥)')
-    ax2.set_xticks(x)
-    ax2.set_xticklabels(time_diff_by_range.index, rotation=45, ha='right')
-    ax2.grid(True, alpha=0.3)
+    # 3. 套餐收入占比饼图
+    colors = plt.cm.Set3(np.linspace(0, 1, len(package_analysis)))
+    wedges, texts, autotexts = ax3.pie(package_analysis['收入占比(%)'], 
+                                       labels=[f"套餐{pid}" for pid in package_analysis.index], 
+                                       autopct='%1.1f%%', colors=colors, startangle=90)
+    ax3.set_title('各套餐收入占比', fontweight='bold', fontsize=12)
     
-    # 添加数值标签
-    for bar in bars2:
-        height = bar.get_height()
-        ax2.text(bar.get_x() + bar.get_width()/2., height + 10,
-                f'¥{int(height)}', ha='center', va='bottom')
+    # 4. 套餐预订趋势
+    if package_trend is not None:
+        for i, col in enumerate(package_trend.columns):
+            ax4.plot(package_trend.index, package_trend[col], 'o-', linewidth=2, 
+                    label=f"套餐{col}", color=colors[i], alpha=0.8)
+        ax4.set_title('套餐预订趋势', fontweight='bold', fontsize=12)
+        ax4.set_xlabel('日期')
+        ax4.set_ylabel('订单数')
+        ax4.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+        ax4.grid(True, alpha=0.3)
+        ax4.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
+        ax4.xaxis.set_major_locator(mdates.DayLocator(interval=2))
+        plt.setp(ax4.xaxis.get_majorticklabels(), rotation=45)
     
     plt.tight_layout()
     return fig
@@ -560,7 +575,7 @@ def main():
         help="请上传包含预约入住明细的Excel文件"
     )
     
-    # 酒店配置
+    # 酒店配置（修复版）
     total_rooms, room_config = configure_hotel_rooms()
     
     if uploaded_file is None:
@@ -572,6 +587,11 @@ def main():
         df, valid_df = load_and_preprocess_data(uploaded_file)
         st.session_state['valid_df'] = valid_df
     
+    # 订单状态筛选
+    selected_status = add_order_status_filter(valid_df)
+    if selected_status is not None and len(selected_status) > 0:
+        valid_df = valid_df[valid_df['预约状态'].isin(selected_status)]
+    
     # 侧边栏数据概览
     st.sidebar.markdown("### 📊 数据概览")
     st.sidebar.write(f"总记录数: **{len(df):,}**")
@@ -579,31 +599,39 @@ def main():
     
     if len(valid_df) > 0:
         st.sidebar.write(f"数据时间范围:")
-        st.sidebar.write(f"- 预约时间: {valid_df['预约时间'].min().strftime('%Y-%m-%d')} 至 {valid_df['预约时间'].max().strftime('%Y-%m-%d')}")
-        st.sidebar.write(f"- 入住时间: {valid_df['入住日期'].min().strftime('%Y-%m-%d')} 至 {valid_df['入住日期'].max().strftime('%Y-%m-%d')}")
+        if '预约时间' in valid_df.columns:
+            st.sidebar.write(f"- 预约时间: {valid_df['预约时间'].min().strftime('%Y-%m-%d')} 至 {valid_df['预约时间'].max().strftime('%Y-%m-%d')}")
+        if '入住日期' in valid_df.columns:
+            st.sidebar.write(f"- 入住时间: {valid_df['入住日期'].min().strftime('%Y-%m-%d')} 至 {valid_df['入住日期'].max().strftime('%Y-%m-%d')}")
         
         # 计算整体OCC
-        total_room_nights = valid_df['入住天数'].sum()
-        date_start = valid_df['入住日期'].min()
-        date_end = valid_df['入住日期'].max()
-        date_range_days = (date_end - date_start).days + 1
-        overall_occ = calculate_occ(total_room_nights, total_rooms, date_range_days)
-        st.sidebar.metric("整体OCC", f"{overall_occ}%")
+        if '入住天数' in valid_df.columns and '入住日期' in valid_df.columns:
+            total_room_nights = valid_df['入住天数'].sum()
+            date_start = valid_df['入住日期'].min()
+            date_end = valid_df['入住日期'].max()
+            date_range_days = max(1, (date_end - date_start).days + 1)
+            overall_occ = calculate_occ(total_room_nights, total_rooms, date_range_days)
+            st.sidebar.metric("整体OCC", f"{overall_occ}%")
     
     # 侧边栏分析选项
     st.sidebar.markdown("### 📈 分析选项")
     analysis_type = st.sidebar.radio(
         "选择分析类型",
         ["数据概览", "房型深度分析", "预订趋势分析", "入住间夜分析", 
-         "入住时间分析", "购买预约时间差", "OCC分析", "详细数据"]
+         "入住时间分析", "购买预约时间差", "OCC分析", "套餐分析", "详细数据"]
     )
     
     # 主内容区域
     st.title("🏨 酒店预约入住数据分析系统")
     st.markdown("---")
     
+    # 数据为空判断
+    if len(valid_df) == 0:
+        st.error("⚠️ 没有有效数据，请检查上传的文件或筛选条件")
+        st.stop()
+    
     # ----------------------
-    # 6. 数据概览
+    # 各分析模块实现
     # ----------------------
     if analysis_type == "数据概览":
         st.header("📊 数据整体概览")
@@ -615,11 +643,11 @@ def main():
             st.metric("总预约单数", f"{len(valid_df):,}")
         
         with col2:
-            total_room_nights = valid_df['入住天数'].sum()
+            total_room_nights = valid_df['入住天数'].sum() if '入住天数' in valid_df.columns else 0
             st.metric("总间夜数", f"{total_room_nights:,}")
         
         with col3:
-            avg_adr = valid_df['ADR'].mean() if 'ADR' in valid_df.columns else 0
+            avg_adr = valid_df['ADR'].mean() if 'ADR' in valid_df.columns and not pd.isna(valid_df['ADR']).all() else 0
             st.metric("平均ADR", f"¥{avg_adr:.2f}")
         
         with col4:
@@ -627,8 +655,14 @@ def main():
             st.metric("总实收金额", f"¥{total_revenue:,.2f}")
         
         with col5:
-            overall_occ = calculate_occ(total_room_nights, total_rooms, date_range_days)
-            st.metric("整体OCC", f"{overall_occ}%")
+            if '入住天数' in valid_df.columns and '入住日期' in valid_df.columns:
+                date_start = valid_df['入住日期'].min()
+                date_end = valid_df['入住日期'].max()
+                date_range_days = max(1, (date_end - date_start).days + 1)
+                overall_occ = calculate_occ(total_room_nights, total_rooms, date_range_days)
+                st.metric("整体OCC", f"{overall_occ}%")
+            else:
+                st.metric("整体OCC", "N/A")
         
         st.markdown("---")
         
@@ -642,549 +676,265 @@ def main():
             ],
             "数值": [
                 f"{len(valid_df):,}",
-                f"{valid_df['入住天数'].sum():,}",
-                f"{valid_df['入住天数'].mean():.1f} 天/单",
-                f"¥{valid_df['ADR'].mean():.2f}",
-                f"¥{valid_df['订单实收'].sum():,.2f}",
-                f"{overall_occ}%",
-                f"{valid_df['预约房型'].value_counts().index[0]}",
-                f"{valid_df['入住日期'].min().strftime('%Y-%m-%d')} 至 {valid_df['入住日期'].max().strftime('%Y-%m-%d')}",
-                f"{valid_df['是否节假日'].sum() / len(valid_df) * 100:.1f}%",
+                f"{valid_df['入住天数'].sum():,}" if '入住天数' in valid_df.columns else "N/A",
+                f"{valid_df['入住天数'].mean():.1f} 天/单" if '入住天数' in valid_df.columns else "N/A",
+                f"¥{valid_df['ADR'].mean():.2f}" if 'ADR' in valid_df.columns and not pd.isna(valid_df['ADR']).all() else "N/A",
+                f"¥{valid_df['订单实收'].sum():,.2f}" if '订单实收' in valid_df.columns else "N/A",
+                f"{overall_occ}%" if '入住天数' in valid_df.columns and '入住日期' in valid_df.columns else "N/A",
+                f"{valid_df['预约房型'].value_counts().index[0]}" if '预约房型' in valid_df.columns else "N/A",
+                f"{valid_df['入住日期'].min().strftime('%Y-%m-%d')} 至 {valid_df['入住日期'].max().strftime('%Y-%m-%d')}" if '入住日期' in valid_df.columns else "N/A",
+                f"{valid_df['是否节假日'].sum() / len(valid_df) * 100:.1f}%" if '是否节假日' in valid_df.columns else "N/A",
                 f"{valid_df['购买到预约时间差'].mean():.1f} 小时" if '购买到预约时间差' in valid_df.columns else "N/A"
             ]
         }
         stats_df = pd.DataFrame(stats_data)
         st.dataframe(stats_df, use_container_width=True)
     
-    # ----------------------
-    # 7. 房型深度分析
-    # ----------------------
     elif analysis_type == "房型深度分析":
         st.header("🏠 房型深度分析")
         
-        # 筛选器
-        col1, col2 = st.columns(2)
-        with col1:
-            room_types = valid_df['预约房型'].unique()
-            selected_room = st.multiselect(
-                "选择房型（可多选）", 
-                room_types, 
-                default=room_types,
-                help="选择要分析的房型"
-            )
-        
-        with col2:
-            date_range = st.date_input(
-                "选择日期范围",
-                [valid_df['入住日期'].min().date(), valid_df['入住日期'].max().date()],
-                help="选择分析的入住日期范围"
-            )
-        
-        # 应用筛选
-        filtered_df = valid_df[
-            (valid_df['预约房型'].isin(selected_room)) &
-            (valid_df['入住日期'].dt.date >= date_range[0]) &
-            (valid_df['入住日期'].dt.date <= date_range[1])
-        ]
-        
-        if len(filtered_df) == 0:
-            st.warning("没有符合筛选条件的数据，请调整筛选参数")
-            st.stop()
-        
         # 执行分析
-        room_analysis = analyze_room_type_performance(filtered_df, room_config)
+        room_analysis = analyze_room_type_performance(valid_df, room_config)
         
-        # 显示分析结果表格
-        st.subheader("1. 房型性能指标汇总")
-        st.dataframe(room_analysis, use_container_width=True)
-        
-        # 可视化
-        st.subheader("2. 房型性能可视化分析")
-        fig = plot_room_type_performance(room_analysis)
-        st.pyplot(fig)
-        
-        # 关键洞察
-        st.subheader("3. 关键洞察")
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            best_occ_room = room_analysis['房型OCC(%)'].idxmax()
-            st.info(f"""
-            **最高OCC房型**  
-            房型: {best_occ_room}  
-            OCC: {room_analysis.loc[best_occ_room, '房型OCC(%)']}%  
-            间晚数: {room_analysis.loc[best_occ_room, '总间晚数']:,}
-            """)
-        
-        with col2:
-            best_adr_room = room_analysis['平均ADR'].idxmax()
-            st.info(f"""
-            **最高ADR房型**  
-            房型: {best_adr_room}  
-            平均ADR: ¥{room_analysis.loc[best_adr_room, '平均ADR']:.2f}  
-            总收入: ¥{room_analysis.loc[best_adr_room, '总收入']:,.2f}
-            """)
-        
-        with col3:
-            top_revenue_room = room_analysis['收入占比(%)'].idxmax()
-            st.info(f"""
-            **收入贡献最大房型**  
-            房型: {top_revenue_room}  
-            收入占比: {room_analysis.loc[top_revenue_room, '收入占比(%)']}%  
-            间晚占比: {room_analysis.loc[top_revenue_room, '间晚占比(%)']}%
-            """)
+        if room_analysis is None:
+            st.warning("⚠️ 缺少房型分析所需字段（预约房型/入住日期）")
+        else:
+            # 显示数据表格
+            st.subheader("1. 房型性能指标汇总")
+            st.dataframe(room_analysis, use_container_width=True)
+            
+            # 可视化
+            st.subheader("2. 房型分析可视化")
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+            
+            # 房型订单数对比
+            room_orders = room_analysis['订单数'].sort_values(ascending=False)
+            ax1.bar(room_orders.index, room_orders.values, color='#FF6B6B', alpha=0.8)
+            ax1.set_title('各房型订单数', fontweight='bold')
+            ax1.tick_params(axis='x', rotation=45)
+            
+            # 房型OCC对比
+            room_occ = room_analysis['房型OCC(%)'].sort_values(ascending=False)
+            ax2.bar(room_occ.index, room_occ.values, color='#4ECDC4', alpha=0.8)
+            ax2.set_title('各房型OCC', fontweight='bold')
+            ax2.set_ylabel('OCC (%)')
+            ax2.tick_params(axis='x', rotation=45)
+            
+            plt.tight_layout()
+            st.pyplot(fig)
     
-    # ----------------------
-    # 8. 预订趋势分析
-    # ----------------------
     elif analysis_type == "预订趋势分析":
         st.header("📈 预订趋势分析")
         
-        # 筛选器
+        fig = plot_booking_trend(valid_df)
+        if fig is None:
+            st.warning("⚠️ 缺少预约时间字段，无法生成趋势图")
+        else:
+            st.pyplot(fig)
+            
+            # 额外统计
+            st.subheader("预订趋势关键指标")
+            if '预约时间' in valid_df.columns:
+                daily_avg = valid_df.groupby(valid_df['预约时间'].dt.date).size().mean()
+                peak_day = valid_df.groupby(valid_df['预约时间'].dt.date).size().idxmax()
+                peak_value = valid_df.groupby(valid_df['预约时间'].dt.date).size().max()
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("日均预约量", f"{daily_avg:.1f}")
+                with col2:
+                    st.metric("预约峰值日期", peak_day.strftime('%Y-%m-%d'))
+                with col3:
+                    st.metric("峰值预约量", f"{peak_value:,}")
+    
+    elif analysis_type == "入住间夜分析":
+        st.header("🌙 入住间夜分析")
+        
+        fig = plot_room_night_analysis(valid_df)
+        if fig is None:
+            st.warning("⚠️ 缺少入住日期/入住天数字段，无法生成间夜分析图")
+        else:
+            st.pyplot(fig)
+            
+            # 额外统计
+            st.subheader("间夜分析关键指标")
+            if '入住天数' in valid_df.columns:
+                avg_nights = valid_df['入住天数'].mean()
+                total_nights = valid_df['入住天数'].sum()
+                max_single_night = valid_df['入住天数'].max()
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("平均每单间晚数", f"{avg_nights:.1f}")
+                with col2:
+                    st.metric("总间夜数", f"{total_nights:,}")
+                with col3:
+                    st.metric("最大单次间夜数", f"{max_single_night}")
+    
+    elif analysis_type == "入住时间分析":
+        st.header("⏰ 入住时间分析")
+        
+        fig = plot_checkin_time_analysis(valid_df)
+        st.pyplot(fig)
+    
+    elif analysis_type == "购买预约时间差":
+        st.header("🕒 购买-预约时间差分析")
+        
+        fig = plot_purchase_booking_gap(valid_df)
+        if fig is None:
+            st.warning("⚠️ 缺少下单时间/预约时间字段，无法生成时间差分析图")
+        else:
+            st.pyplot(fig)
+            
+            # 关键指标
+            if '购买到预约时间差' in valid_df.columns:
+                gap_data = valid_df['购买到预约时间差'].dropna()
+                if len(gap_data) > 0:
+                    avg_gap = gap_data.mean()
+                    median_gap = gap_data.median()
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.metric("平均购买-预约时间差", f"{avg_gap:.1f} 小时")
+                    with col2:
+                        st.metric("中位购买-预约时间差", f"{median_gap:.1f} 小时")
+    
+    elif analysis_type == "OCC分析":
+        st.header("📊 OCC（入住率）分析")
+        
+        fig = plot_occ_analysis(valid_df, total_rooms)
+        if fig is None:
+            st.warning("⚠️ 缺少入住日期/入住天数字段，无法生成OCC分析图")
+        else:
+            st.pyplot(fig)
+            
+            # OCC关键指标
+            if '入住天数' in valid_df.columns and '入住日期' in valid_df.columns:
+                total_room_nights = valid_df['入住天数'].sum()
+                date_start = valid_df['入住日期'].min()
+                date_end = valid_df['入住日期'].max()
+                date_range_days = max(1, (date_end - date_start).days + 1)
+                overall_occ = calculate_occ(total_room_nights, total_rooms, date_range_days)
+                
+                # 按星期计算OCC
+                week_occ = {}
+                for week in ['星期一', '星期二', '星期三', '星期四', '星期五', '星期六', '星期日']:
+                    week_df = valid_df[valid_df['入住星期中文'] == week] if '入住星期中文' in valid_df.columns else valid_df
+                    week_nights = week_df['入住天数'].sum()
+                    week_days = len(week_df['入住日期'].dt.date.unique())
+                    week_occ[week] = calculate_occ(week_nights, total_rooms, week_days)
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("整体OCC", f"{overall_occ:.1f}%")
+                with col2:
+                    max_week = max(week_occ.items(), key=lambda x: x[1])
+                    st.metric("OCC最高的星期", f"{max_week[0]} ({max_week[1]:.1f}%)")
+    
+    elif analysis_type == "套餐分析":
+        st.header("📦 套餐分析（按商品ID）")
+        
+        if '商品ID' not in valid_df.columns:
+            st.warning("⚠️ 数据中缺少商品ID字段，无法进行套餐分析")
+        else:
+            # 套餐筛选
+            package_ids = valid_df['商品ID'].unique()
+            selected_packages = st.multiselect(
+                "选择套餐（按商品ID）",
+                package_ids,
+                default=package_ids,
+                help="选择要分析的套餐"
+            )
+            
+            filtered_df = valid_df[valid_df['商品ID'].isin(selected_packages)]
+            
+            if len(filtered_df) == 0:
+                st.warning("⚠️ 没有符合筛选条件的套餐数据")
+            else:
+                # 执行分析
+                package_analysis, package_trend = analyze_packages(filtered_df)
+                
+                if package_analysis is None:
+                    st.warning("⚠️ 套餐分析失败，请检查数据格式")
+                else:
+                    # 显示分析结果
+                    st.subheader("1. 套餐性能指标汇总")
+                    st.dataframe(package_analysis, use_container_width=True)
+                    
+                    # 可视化
+                    st.subheader("2. 套餐分析可视化")
+                    fig = plot_package_analysis(package_analysis, package_trend)
+                    st.pyplot(fig)
+                    
+                    # 关键洞察
+                    st.subheader("3. 关键洞察")
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        top_package = package_analysis['订单数'].idxmax()
+                        st.info(f"""
+                        **最受欢迎套餐**  
+                        套餐ID: {top_package}  
+                        套餐名称: {package_analysis.loc[top_package, '套餐名称']}  
+                        订单数: {package_analysis.loc[top_package, '订单数']:,}  
+                        订单占比: {package_analysis.loc[top_package, '订单占比(%)']}%
+                        """)
+                    
+                    with col2:
+                        if '总收入' in package_analysis.columns:
+                            highest_rev_package = package_analysis['总收入'].idxmax()
+                            st.info(f"""
+                            **收入最高套餐**  
+                            套餐ID: {highest_rev_package}  
+                            套餐名称: {package_analysis.loc[highest_rev_package, '套餐名称']}  
+                            总收入: ¥{package_analysis.loc[highest_rev_package, '总收入']:,.2f}  
+                            收入占比: {package_analysis.loc[highest_rev_package, '收入占比(%)']}%
+                            """)
+                    
+                    with col3:
+                        if '平均价格' in package_analysis.columns:
+                            highest_price_package = package_analysis['平均价格'].idxmax()
+                            st.info(f"""
+                            **单价最高套餐**  
+                            套餐ID: {highest_price_package}  
+                            套餐名称: {package_analysis.loc[highest_price_package, '套餐名称']}  
+                            平均价格: ¥{package_analysis.loc[highest_price_package, '平均价格']:.2f}  
+                            平均间晚数: {package_analysis.loc[highest_price_package, '平均间晚数']:.1f}
+                            """)
+    
+    elif analysis_type == "详细数据":
+        st.header("📋 详细数据查看")
+        
+        # 数据筛选
+        st.subheader("数据筛选")
         col1, col2 = st.columns(2)
         with col1:
-            time_unit = st.radio(
-                "选择时间维度",
-                ['day', 'week'],
-                format_func=lambda x: '按日' if x == 'day' else '按周',
-                horizontal=True
-            )
-        
+            date_start = st.date_input("开始日期", value=valid_df['入住日期'].min().date() if '入住日期' in valid_df.columns else datetime.now().date())
         with col2:
-            selected_rooms = st.multiselect(
-                "选择要显示的房型",
-                valid_df['预约房型'].unique(),
-                default=valid_df['预约房型'].unique()
-            )
+            date_end = st.date_input("结束日期", value=valid_df['入住日期'].max().date() if '入住日期' in valid_df.columns else datetime.now().date())
         
         # 筛选数据
-        filtered_df = valid_df[valid_df['预约房型'].isin(selected_rooms)]
-        
-        # 执行分析
-        trend_df, room_trends, trend_title = analyze_booking_trend(filtered_df, time_unit)
-        
-        # 显示趋势数据
-        st.subheader(f"1. {trend_title}数据")
-        st.dataframe(trend_df, use_container_width=True)
-        
-        # 可视化
-        st.subheader(f"2. {trend_title}可视化")
-        fig = plot_booking_trend(trend_df, room_trends, trend_title)
-        st.pyplot(fig)
-        
-        # 趋势分析
-        st.subheader("3. 趋势分析")
-        peak_date = trend_df['入住天数'].idxmax()
-        peak_value = trend_df['入住天数'].max()
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            st.info(f"""
-            **预订高峰**  
-            时间: {peak_date}  
-            间晚数: {peak_value:,}  
-            订单数: {trend_df.loc[peak_date, '预约房型']:,}
-            """)
-        
-        with col2:
-            avg_daily_nights = trend_df['入住天数'].mean()
-            st.info(f"""
-            **平均预订量**  
-            日均/周间晚数: {avg_daily_nights:.1f}  
-            日均/周订单数: {trend_df['预约房型'].mean():.1f}  
-            趋势波动性: {trend_df['入住天数'].std() / avg_daily_nights:.2f}
-            """)
-    
-    # ----------------------
-    # 9. 入住间夜分析
-    # ----------------------
-    elif analysis_type == "入住间夜分析":
-        st.header("🛏️ 入住间夜及房型构成分析")
-        
-        # 执行分析
-        daily_room_nights = analyze_daily_room_nights(valid_df)
-        
-        # 显示每日间夜数据
-        st.subheader("1. 每日入住间夜及房型构成")
-        st.dataframe(daily_room_nights, use_container_width=True)
-        
-        # 可视化
-        st.subheader("2. 每日间夜分析可视化")
-        fig = plot_daily_room_nights(daily_room_nights)
-        st.pyplot(fig)
-        
-        # 关键统计
-        st.subheader("3. 关键统计")
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            peak_night_date = daily_room_nights['总计'].idxmax()
-            peak_night_value = daily_room_nights['总计'].max()
-            is_holiday_peak = daily_room_nights.loc[peak_night_date, '是否节假日']
-            st.info(f"""
-            **入住高峰日**  
-            日期: {peak_night_date}  
-            总间夜数: {peak_night_value:,}  
-            节假日: {'是' if is_holiday_peak else '否'}
-            """)
-        
-        with col2:
-            holiday_nights = daily_room_nights[daily_room_nights['是否节假日']]['总计'].sum()
-            total_nights = daily_room_nights['总计'].sum()
-            holiday_ratio = (holiday_nights / total_nights * 100) if total_nights > 0 else 0
-            st.info(f"""
-            **节假日入住占比**  
-            节假日总间夜: {holiday_nights:,}  
-            总间夜数: {total_nights:,}  
-            占比: {holiday_ratio:.1f}%
-            """)
-        
-        with col3:
-            # 主要房型构成
-            room_columns = [col for col in daily_room_nights.columns if col not in ['总计', '是否节假日']]
-            room_totals = daily_room_nights[room_columns].sum()
-            main_room = room_totals.idxmax()
-            main_room_ratio = (room_totals[main_room] / total_nights * 100) if total_nights > 0 else 0
-            st.info(f"""
-            **主要房型构成**  
-            主要房型: {main_room}  
-            间夜数: {room_totals[main_room]:,}  
-            占比: {main_room_ratio:.1f}%
-            """)
-    
-    # ----------------------
-    # 10. 入住时间分析
-    # ----------------------
-    elif analysis_type == "入住时间分析":
-        st.header("⏰ 入住时间维度分析")
-        
-        # 执行分析
-        weekday_dist = analyze_weekday_distribution(valid_df)
-        
-        # 显示星期分布数据
-        st.subheader("1. 星期几入住分布")
-        st.dataframe(weekday_dist, use_container_width=True)
-        
-        # 可视化
-        st.subheader("2. 入住时间可视化分析")
-        fig = plot_weekday_distribution(weekday_dist)
-        st.pyplot(fig)
-        
-        # 关键洞察
-        st.subheader("3. 关键洞察")
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            peak_weekday = weekday_dist['总间晚数'].idxmax()
-            st.info(f"""
-            **入住高峰星期**  
-            星期: {peak_weekday}  
-            总间夜数: {weekday_dist.loc[peak_weekday, '总间晚数']:,}  
-            占比: {weekday_dist.loc[peak_weekday, '间晚占比(%)']}%
-            """)
-        
-        with col2:
-            highest_adr_weekday = weekday_dist['平均ADR'].idxmax()
-            st.info(f"""
-            **最高ADR星期**  
-            星期: {highest_adr_weekday}  
-            平均ADR: ¥{weekday_dist.loc[highest_adr_weekday, '平均ADR']:.2f}  
-            总收入: ¥{weekday_dist.loc[highest_adr_weekday, '总收入']:,.2f}
-            """)
-    
-    # ----------------------
-    # 11. 购买预约时间差
-    # ----------------------
-    elif analysis_type == "购买-预约时间差":
-        st.header("📅 购买到预约时间差分析")
-        
-        if '购买到预约时间差' not in valid_df.columns:
-            st.warning("数据中缺少下单时间或预约时间字段，无法计算时间差")
-            st.stop()
-        
-        # 执行分析
-        time_diff_analysis, time_diff_by_range = analyze_purchase_to_booking(valid_df)
-        
-        # 显示时间差统计
-        st.subheader("1. 购买到预约时间差统计")
-        st.dataframe(time_diff_analysis, use_container_width=True)
-        
-        # 显示区间分析
-        st.subheader("2. 时间差区间分析")
-        st.dataframe(time_diff_by_range, use_container_width=True)
-        
-        # 可视化
-        st.subheader("3. 时间差分析可视化")
-        fig = plot_purchase_to_booking(time_diff_by_range)
-        st.pyplot(fig)
-        
-        # 关键洞察
-        st.subheader("4. 关键洞察")
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            instant_booking_ratio = time_diff_by_range.loc['即时预约(≤0h)', '订单占比(%)']
-            st.info(f"""
-            **即时预约占比**  
-            订单数: {time_diff_by_range.loc['即时预约(≤0h)', '订单数']:,}  
-            占比: {instant_booking_ratio}%  
-            平均ADR: ¥{time_diff_by_range.loc['即时预约(≤0h)', '平均ADR']:.2f}
-            """)
-        
-        with col2:
-            avg_time_diff = time_diff_analysis.loc['mean', '购买到预约时间差']
-            median_time_diff = time_diff_analysis.loc['median', '购买到预约时间差']
-            st.info(f"""
-            **时间差统计**  
-            平均时间差: {avg_time_diff:.1f} 小时  
-            中位时间差: {median_time_diff:.1f} 小时  
-            最长时间差: {time_diff_analysis.loc['max', '购买到预约时间差']:.1f} 小时
-            """)
-    
-    # ----------------------
-    # 12. OCC分析
-    # ----------------------
-    elif analysis_type == "OCC分析":
-        st.header("📊 入住率(OCC)深度分析")
-        
-        # 按时间段计算OCC
-        st.subheader("1. 整体OCC趋势")
-        
-        # 按日期计算每日OCC
-        daily_occ = valid_df.groupby(valid_df['入住日期'].dt.date).agg({
-            '入住天数': 'sum'
-        })
-        daily_occ.columns = ['总间晚数']
-        daily_occ['当日OCC(%)'] = (daily_occ['总间晚数'] / total_rooms * 100).round(2)
-        daily_occ['是否节假日'] = [is_holiday(pd.to_datetime(date)) for date in daily_occ.index]
-        
-        # 显示每日OCC
-        st.dataframe(daily_occ, use_container_width=True)
-        
-        # 可视化OCC趋势
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(16, 10))
-        
-        # 1. 每日OCC趋势（节假日标红）
-        dates = pd.to_datetime(daily_occ.index)
-        holiday_mask = daily_occ['是否节假日']
-        
-        ax1.plot(dates[~holiday_mask], daily_occ.loc[~holiday_mask, '当日OCC(%)'], 
-                'o-', color='#4ECDC4', linewidth=2, label='非节假日', alpha=0.8)
-        if holiday_mask.any():
-            ax1.plot(dates[holiday_mask], daily_occ.loc[holiday_mask, '当日OCC(%)'], 
-                    'o-', color='red', linewidth=2, markersize=8, label='节假日', alpha=0.8)
-        
-        ax1.axhline(daily_occ['当日OCC(%)'].mean(), color='black', linestyle='--', 
-                   label=f'平均OCC: {daily_occ["当日OCC(%)"].mean():.1f}%')
-        ax1.set_title('每日OCC趋势（节假日标红）', fontweight='bold', fontsize=12)
-        ax1.set_xlabel('日期')
-        ax1.set_ylabel('当日OCC (%)')
-        ax1.legend()
-        ax1.grid(True, alpha=0.3)
-        
-        # 格式化x轴
-        ax1.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
-        ax1.xaxis.set_major_locator(mdates.DayLocator(interval=2))
-        plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45)
-        
-        # 2. 各房型OCC对比
-        room_analysis = analyze_room_type_performance(valid_df, room_config)
-        x = range(len(room_analysis))
-        bars = ax2.bar(x, room_analysis['房型OCC(%)'], color=plt.cm.Set3(np.linspace(0, 1, len(room_analysis))), alpha=0.8)
-        ax2.axhline(overall_occ, color='red', linestyle='--', label=f'整体OCC: {overall_occ}%')
-        
-        ax2.set_title('各房型OCC对比', fontweight='bold', fontsize=12)
-        ax2.set_xlabel('房型')
-        ax2.set_ylabel('房型OCC (%)')
-        ax2.set_xticks(x)
-        ax2.set_xticklabels(room_analysis.index, rotation=45, ha='right')
-        ax2.legend()
-        ax2.grid(True, alpha=0.3)
-        
-        # 添加数值标签
-        for bar in bars:
-            height = bar.get_height()
-            ax2.text(bar.get_x() + bar.get_width()/2., height + 0.5,
-                    f'{height:.1f}%', ha='center', va='bottom', fontsize=9)
-        
-        plt.tight_layout()
-        st.pyplot(fig)
-        
-        # OCC统计
-        st.subheader("2. OCC关键统计")
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            max_occ_date = daily_occ['当日OCC(%)'].idxmax()
-            max_occ_value = daily_occ['当日OCC(%)'].max()
-            st.info(f"""
-            **最高OCC日期**  
-            日期: {max_occ_date}  
-            OCC: {max_occ_value:.1f}%  
-            间夜数: {daily_occ.loc[max_occ_date, '总间晚数']:,}
-            """)
-        
-        with col2:
-            holiday_occ = daily_occ[daily_occ['是否节假日']]['当日OCC(%)'].mean()
-            weekday_occ = daily_occ[~daily_occ['是否节假日']]['当日OCC(%)'].mean()
-            st.info(f"""
-            **节假日vs平日OCC**  
-            节假日平均OCC: {holiday_occ:.1f}%  
-            平日平均OCC: {weekday_occ:.1f}%  
-            差值: {holiday_occ - weekday_occ:.1f}%
-            """)
-        
-        with col3:
-            # OCC达标率（假设80%为达标线）
-            target_occ = 80
-            days_above_target = (daily_occ['当日OCC(%)'] >= target_occ).sum()
-            total_days = len(daily_occ)
-            target_ratio = (days_above_target / total_days * 100) if total_days > 0 else 0
-            st.info(f"""
-            **OCC达标率**  
-            目标OCC: {target_occ}%  
-            达标天数: {days_above_target}/{total_days}  
-            达标率: {target_ratio:.1f}%
-            """)
-    
-    # ----------------------
-    # 13. 详细数据
-    # ----------------------
-    elif analysis_type == "详细数据":
-        st.header("📋 详细数据查询与导出")
-        
-        # 保留原有的详细数据功能...
-        # 数据筛选器
-        st.subheader("数据筛选")
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            room_filter = st.multiselect(
-                "筛选房型",
-                valid_df['预约房型'].unique(),
-                default=valid_df['预约房型'].unique()
-            )
-        
-        with col2:
-            stay_filter = st.multiselect(
-                "筛选入住天数",
-                sorted(valid_df['入住天数'].unique()),
-                default=sorted(valid_df['入住天数'].unique())
-            )
-        
-        with col3:
-            price_range = st.slider(
-                "筛选实收金额范围（¥）",
-                min_value=float(valid_df['订单实收'].min()),
-                max_value=float(valid_df['订单实收'].max()),
-                value=(float(valid_df['订单实收'].min()), float(valid_df['订单实收'].max())),
-                step=10.0
-            )
-        
-        # 应用筛选
-        filtered_df = valid_df[
-            (valid_df['预约房型'].isin(room_filter)) &
-            (valid_df['入住天数'].isin(stay_filter)) &
-            (valid_df['订单实收'] >= price_range[0]) &
-            (valid_df['订单实收'] <= price_range[1])
-        ]
-        
-        st.write(f"筛选结果：共 **{len(filtered_df):,}** 条记录")
-        
-        # 选择显示字段
-        st.subheader("选择显示字段")
-        all_columns = valid_df.columns.tolist()
-        
-        # 常用字段推荐
-        common_fields = [
-            '订单ID', '预约单号', '预约房型', '预约门店名称', '订单实收', 'ADR',
-            '入住日期', '离店日期', '入住天数', '下单时间', '预约时间',
-            '预约状态', '是否节假日', '购买到预约时间差'
-        ]
-        common_fields = [f for f in common_fields if f in all_columns]
-        
-        # 字段选择
-        selected_fields = st.multiselect(
-            "选择要显示的字段（默认显示常用字段）",
-            all_columns,
-            default=common_fields
-        )
-        
-        if not selected_fields:
-            st.warning("请至少选择一个字段")
-            st.stop()
+        filtered_data = valid_df.copy()
+        if '入住日期' in filtered_data.columns:
+            filtered_data = filtered_data[(filtered_data['入住日期'].dt.date >= date_start) & 
+                                         (filtered_data['入住日期'].dt.date <= date_end)]
         
         # 显示数据
-        st.subheader("详细数据表格")
-        display_df = filtered_df[selected_fields].copy()
-        
-        # 格式化日期时间字段
-        datetime_fields = ['下单时间', '支付时间', '预约时间', '入住日期', '离店日期']
-        for field in datetime_fields:
-            if field in display_df.columns:
-                display_df[field] = display_df[field].dt.strftime('%Y-%m-%d %H:%M:%S')
-        
-        # 分页显示
-        page_size = st.selectbox("每页显示数量", [20, 50, 100, 200], index=0)
-        total_pages = (len(display_df) + page_size - 1) // page_size
-        
-        if total_pages > 1:
-            page = st.number_input("页码", min_value=1, max_value=total_pages, value=1)
-            start_idx = (page - 1) * page_size
-            end_idx = start_idx + page_size
-            paginated_df = display_df.iloc[start_idx:end_idx]
-            st.dataframe(paginated_df, use_container_width=True, height=600)
-            st.write(f"显示第 {page}/{total_pages} 页，共 {len(display_df):,} 条记录")
-        else:
-            st.dataframe(display_df, use_container_width=True, height=600)
+        st.subheader(f"筛选后数据（共 {len(filtered_data):,} 条）")
+        st.dataframe(filtered_data, use_container_width=True)
         
         # 数据导出
-        st.subheader("数据导出")
-        export_format = st.radio("选择导出格式", ["CSV", "Excel"])
+        @st.cache_data
+        def convert_df_to_csv(df):
+            return df.to_csv(index=False, encoding='utf-8-sig')
         
-        # 准备导出数据
-        export_df = filtered_df.copy()
-        
-        # 格式化日期时间
-        for field in datetime_fields:
-            if field in export_df.columns:
-                export_df[field] = export_df[field].dt.strftime('%Y-%m-%d %H:%M:%S')
-        
-        # 生成导出文件
-        if export_format == "CSV":
-            csv_data = export_df.to_csv(index=False, encoding='utf-8-sig')
-            st.download_button(
-                label="下载CSV文件",
-                data=csv_data,
-                file_name=f"酒店预约数据_{datetime.now().strftime('%Y%m%d%H%M%S')}.csv",
-                mime="text/csv"
-            )
-        else:
-            # 使用ExcelWriter保存多个sheet
-            from io import BytesIO
-            with pd.ExcelWriter(BytesIO(), engine='openpyxl') as writer:
-                # 主要数据
-                export_df.to_excel(writer, sheet_name='详细数据', index=False)
-                
-                # 房型统计
-                room_summary = analyze_room_type_performance(filtered_df, room_config)
-                room_summary.to_excel(writer, sheet_name='房型统计')
-                
-                # 每日OCC
-                daily_occ = filtered_df.groupby(filtered_df['入住日期'].dt.date).agg({
-                    '入住天数': 'sum'
-                })
-                daily_occ.columns = ['总间晚数']
-                daily_occ['当日OCC(%)'] = (daily_occ['总间晚数'] / total_rooms * 100).round(2)
-                daily_occ.to_excel(writer, sheet_name='每日OCC')
-            
-            writer.handles['output'].seek(0)
-            st.download_button(
-                label="下载Excel文件（含多个工作表）",
-                data=writer.handles['output'],
-                file_name=f"酒店预约数据_{datetime.now().strftime('%Y%m%d%H%M%S')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+        csv_data = convert_df_to_csv(filtered_data)
+        st.download_button(
+            label="📥 导出筛选后数据为CSV",
+            data=csv_data,
+            file_name=f"酒店数据_{date_start}_{date_end}.csv",
+            mime="text/csv"
+        )
 
 # ----------------------
 # 运行应用
