@@ -6,14 +6,45 @@ from datetime import datetime, timedelta
 import matplotlib.dates as mdates
 from collections import Counter
 import warnings
+import os
+from matplotlib import font_manager
 warnings.filterwarnings('ignore')
 
-# 设置中文字体（适配不同系统）
-# 设置中文字体（适配Streamlit Cloud）
-plt.rcParams['font.sans-serif'] = ['WenQuanYi Zen Hei', 'DejaVu Sans', 'Liberation Sans']
-plt.rcParams['axes.unicode_minus'] = False
-plt.rcParams['font.sans-serif'] = ['WenQuanYi Zen Hei', 'SimHei', 'Arial Unicode MS', 'DejaVu Sans']
-plt.rcParams['axes.unicode_minus'] = False
+# ----------------------
+# 关键修复：适配Streamlit Cloud的中文字体设置
+# ----------------------
+def setup_chinese_font():
+    """配置中文字体，适配本地/云端环境"""
+    # 方案1：尝试加载系统可用的中文字体
+    font_options = [
+        'WenQuanYi Zen Hei',  # Linux系统默认开源中文字体
+        'DejaVu Sans',        # 兜底英文字体
+        'Liberation Sans',
+        'Arial Unicode MS',   # Mac系统
+        'SimHei',             # Windows系统
+        'Microsoft YaHei'
+    ]
+    
+    # 设置字体
+    plt.rcParams['font.sans-serif'] = font_options
+    plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示问题
+    
+    # 额外保障：强制设置matplotlib的字体缓存
+    plt.rcParams['font.family'] = 'sans-serif'
+    
+    # 验证字体是否生效（调试用）
+    try:
+        # 测试中文渲染
+        fig, ax = plt.subplots(figsize=(1,1))
+        ax.text(0.5, 0.5, '测试中文', fontsize=12)
+        plt.close(fig)
+    except:
+        # 如果仍有问题，使用matplotlib默认字体并转英文（兜底）
+        plt.rcParams['font.sans-serif'] = ['DejaVu Sans']
+        st.warning("⚠️ 云端环境无中文字体，部分标签将显示英文")
+
+# 执行字体配置
+setup_chinese_font()
 
 # 设置页面配置
 st.set_page_config(
@@ -291,10 +322,11 @@ def plot_booking_trend(df):
     fig, ax = plt.subplots(figsize=(14, 6))
     ax.plot(trend_data.index, trend_data.values, 'o-', color='#FF6B6B', linewidth=2, markersize=4)
     
-    # 样式设置
-    ax.set_title('预约量趋势（按日期）', fontsize=14, fontweight='bold', pad=20)
-    ax.set_xlabel('日期', fontsize=12)
-    ax.set_ylabel('预约订单数', fontsize=12)
+    # 样式设置（中英文兜底）
+    ax.set_title('预约量趋势（按日期）' if plt.rcParams['font.sans-serif'][0] != 'DejaVu Sans' else 'Booking Trend (by Date)', 
+                 fontsize=14, fontweight='bold', pad=20)
+    ax.set_xlabel('日期' if plt.rcParams['font.sans-serif'][0] != 'DejaVu Sans' else 'Date', fontsize=12)
+    ax.set_ylabel('预约订单数' if plt.rcParams['font.sans-serif'][0] != 'DejaVu Sans' else 'Booking Orders', fontsize=12)
     ax.grid(True, alpha=0.3)
     
     # 日期格式化
@@ -317,10 +349,11 @@ def plot_room_night_analysis(df):
     fig, ax = plt.subplots(figsize=(14, 6))
     ax.bar(night_data.index, night_data.values, color='#4ECDC4', alpha=0.8, width=0.8)
     
-    # 样式设置
-    ax.set_title('每日入住间夜数', fontsize=14, fontweight='bold', pad=20)
-    ax.set_xlabel('日期', fontsize=12)
-    ax.set_ylabel('间夜数', fontsize=12)
+    # 样式设置（中英文兜底）
+    ax.set_title('每日入住间夜数' if plt.rcParams['font.sans-serif'][0] != 'DejaVu Sans' else 'Daily Room Nights', 
+                 fontsize=14, fontweight='bold', pad=20)
+    ax.set_xlabel('日期' if plt.rcParams['font.sans-serif'][0] != 'DejaVu Sans' else 'Date', fontsize=12)
+    ax.set_ylabel('间夜数' if plt.rcParams['font.sans-serif'][0] != 'DejaVu Sans' else 'Room Nights', fontsize=12)
     ax.grid(True, alpha=0.3, axis='y')
     
     # 日期格式化
@@ -334,38 +367,39 @@ def plot_room_night_analysis(df):
 def plot_checkin_time_analysis(df):
     """入住时间分析"""
     fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(14, 10))
+    use_chinese = plt.rcParams['font.sans-serif'][0] != 'DejaVu Sans'
     
     # 1. 按星期分析
     if '入住星期中文' in df.columns:
         week_data = df['入住星期中文'].value_counts()
-        week_order = ['星期一', '星期二', '星期三', '星期四', '星期五', '星期六', '星期日']
-        week_data = week_data.reindex(week_order, fill_value=0)
+        week_order = ['星期一', '星期二', '星期三', '星期四', '星期五', '星期六', '星期日'] if use_chinese else ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+        week_data = week_data.reindex(week_order if use_chinese else df['入住星期'].unique(), fill_value=0)
         ax1.bar(week_data.index, week_data.values, color='#45B7D1', alpha=0.8)
-        ax1.set_title('入住星期分布', fontweight='bold')
+        ax1.set_title('入住星期分布' if use_chinese else 'Check-in by Weekday', fontweight='bold')
         ax1.tick_params(axis='x', rotation=45)
     
     # 2. 按月分析
     if '入住月份' in df.columns:
         month_data = df['入住月份'].value_counts().sort_index()
         ax2.bar(month_data.index, month_data.values, color='#96CEB4', alpha=0.8)
-        ax2.set_title('入住月份分布', fontweight='bold')
-        ax2.set_xlabel('月份')
+        ax2.set_title('入住月份分布' if use_chinese else 'Check-in by Month', fontweight='bold')
+        ax2.set_xlabel('月份' if use_chinese else 'Month')
         ax2.set_xticks(range(1, 13))
     
     # 3. 节假日vs工作日
     if '是否节假日' in df.columns:
         holiday_data = df['是否节假日'].value_counts()
-        labels = ['工作日', '节假日'] if True in holiday_data.index else ['所有日期']
+        labels = ['工作日', '节假日'] if (True in holiday_data.index and use_chinese) else ['Weekday', 'Holiday']
         values = [holiday_data.get(False, 0), holiday_data.get(True, 0)] if True in holiday_data.index else [len(df)]
         ax3.pie(values, labels=labels, autopct='%1.1f%%', colors=['#FFEAA7', '#FD79A8'], startangle=90)
-        ax3.set_title('节假日vs工作日入住占比', fontweight='bold')
+        ax3.set_title('节假日vs工作日入住占比' if use_chinese else 'Holiday vs Weekday Check-in', fontweight='bold')
     
     # 4. 按小时分析（预约时间）
     if '预约小时' in df.columns:
         hour_data = df['预约小时'].value_counts().sort_index()
         ax4.plot(hour_data.index, hour_data.values, 'o-', color='#6C5CE7', linewidth=2)
-        ax4.set_title('预约小时分布', fontweight='bold')
-        ax4.set_xlabel('小时')
+        ax4.set_title('预约小时分布' if use_chinese else 'Booking Hour Distribution', fontweight='bold')
+        ax4.set_xlabel('小时' if use_chinese else 'Hour')
         ax4.set_xticks(range(0, 24, 2))
     
     plt.tight_layout()
@@ -384,23 +418,24 @@ def plot_purchase_booking_gap(df):
         return None
     
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+    use_chinese = plt.rcParams['font.sans-serif'][0] != 'DejaVu Sans'
     
     # 1. 直方图
     ax1.hist(gap_data, bins=20, color='#A29BFE', alpha=0.7, edgecolor='black')
-    ax1.set_title('购买到预约时间差分布（小时）', fontweight='bold')
-    ax1.set_xlabel('小时')
-    ax1.set_ylabel('订单数')
+    ax1.set_title('购买到预约时间差分布（小时）' if use_chinese else 'Purchase-Booking Gap (Hours)', fontweight='bold')
+    ax1.set_xlabel('小时' if use_chinese else 'Hours', fontsize=12)
+    ax1.set_ylabel('订单数' if use_chinese else 'Orders', fontsize=12)
     ax1.grid(True, alpha=0.3)
     
     # 2. 按天数分组
     gap_days = gap_data / 24
     bins = [0, 1, 3, 7, 15, 30, 90, float('inf')]
-    labels = ['0-1天', '1-3天', '3-7天', '7-15天', '15-30天', '30-90天', '90天以上']
+    labels = ['0-1天', '1-3天', '3-7天', '7-15天', '15-30天', '30-90天', '90天以上'] if use_chinese else ['0-1d', '1-3d', '3-7d', '7-15d', '15-30d', '30-90d', '>90d']
     gap_groups = pd.cut(gap_days, bins=bins, labels=labels, right=False)
     group_counts = gap_groups.value_counts()
     
     ax2.bar(group_counts.index, group_counts.values, color='#FD79A8', alpha=0.8)
-    ax2.set_title('购买到预约时间差分组统计', fontweight='bold')
+    ax2.set_title('购买到预约时间差分组统计' if use_chinese else 'Purchase-Booking Gap Group', fontweight='bold')
     ax2.tick_params(axis='x', rotation=45)
     
     plt.tight_layout()
@@ -425,21 +460,23 @@ def plot_occ_analysis(df, total_rooms):
     
     # 创建图表
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10))
+    use_chinese = plt.rcParams['font.sans-serif'][0] != 'DejaVu Sans'
     
     # 1. 每日OCC趋势
     ax1.plot(date_range, occ_data, 'o-', color='#E17055', linewidth=2, markersize=4)
-    ax1.set_title('每日OCC趋势', fontsize=14, fontweight='bold')
-    ax1.set_ylabel('OCC (%)')
+    ax1.set_title('每日OCC趋势' if use_chinese else 'Daily OCC Trend', fontsize=14, fontweight='bold')
+    ax1.set_ylabel('OCC (%)', fontsize=12)
     ax1.set_ylim(0, 100)
     ax1.grid(True, alpha=0.3)
-    ax1.axhline(y=np.mean(occ_data), color='red', linestyle='--', alpha=0.7, label=f'平均OCC: {np.mean(occ_data):.1f}%')
+    ax1.axhline(y=np.mean(occ_data), color='red', linestyle='--', alpha=0.7, 
+                label=f'平均OCC: {np.mean(occ_data):.1f}%' if use_chinese else f'Avg OCC: {np.mean(occ_data):.1f}%')
     ax1.legend()
     
     # 2. OCC分布
     ax2.hist(occ_data, bins=15, color='#00B894', alpha=0.7, edgecolor='black')
-    ax2.set_title('OCC值分布', fontsize=14, fontweight='bold')
-    ax2.set_xlabel('OCC (%)')
-    ax2.set_ylabel('天数')
+    ax2.set_title('OCC值分布' if use_chinese else 'OCC Distribution', fontsize=14, fontweight='bold')
+    ax2.set_xlabel('OCC (%)', fontsize=12)
+    ax2.set_ylabel('天数' if use_chinese else 'Days', fontsize=12)
     ax2.grid(True, alpha=0.3)
     
     plt.tight_layout()
@@ -499,54 +536,57 @@ def analyze_packages(df):
 def plot_package_analysis(package_analysis, package_trend):
     """绘制套餐分析图表"""
     fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
+    use_chinese = plt.rcParams['font.sans-serif'][0] != 'DejaVu Sans'
     
     # 1. 套餐订单数和收入占比
     x = range(len(package_analysis))
     width = 0.35
     
     bars1 = ax1.bar([i - width/2 for i in x], package_analysis['订单数'], width, 
-                   label='订单数', color='#FF6B6B', alpha=0.8)
+                   label='订单数' if use_chinese else 'Orders', color='#FF6B6B', alpha=0.8)
     ax1_twin = ax1.twinx()
-    line1 = ax1_twin.plot(x, package_analysis['收入占比(%)'], 'o-', color='#4ECDC4', linewidth=2, label='收入占比(%)')
+    line1 = ax1_twin.plot(x, package_analysis['收入占比(%)'], 'o-', color='#4ECDC4', linewidth=2, 
+                          label='收入占比(%)' if use_chinese else 'Revenue %')
     
-    ax1.set_title('各套餐订单数与收入占比', fontweight='bold', fontsize=12)
-    ax1.set_xlabel('套餐ID')
-    ax1.set_ylabel('订单数', color='#FF6B6B')
-    ax1_twin.set_ylabel('收入占比 (%)', color='#4ECDC4')
+    ax1.set_title('各套餐订单数与收入占比' if use_chinese else 'Orders & Revenue by Package', fontweight='bold', fontsize=12)
+    ax1.set_xlabel('套餐ID' if use_chinese else 'Package ID', fontsize=12)
+    ax1.set_ylabel('订单数' if use_chinese else 'Orders', color='#FF6B6B', fontsize=12)
+    ax1_twin.set_ylabel('收入占比 (%)' if use_chinese else 'Revenue %', color='#4ECDC4', fontsize=12)
     ax1.set_xticks(x)
-    ax1.set_xticklabels([f"套餐{pid}" for pid in package_analysis.index], rotation=45, ha='right')
+    ax1.set_xticklabels([f"套餐{pid}" if use_chinese else f"Package {pid}" for pid in package_analysis.index], rotation=45, ha='right')
     ax1.grid(True, alpha=0.3)
     
     # 2. 套餐平均价格和间晚数
     if '平均价格' in package_analysis.columns and '总间晚数' in package_analysis.columns:
         bars2 = ax2.bar([i - width/2 for i in x], package_analysis['平均价格'], width, 
-                       label='平均价格', color='#45B7D1', alpha=0.8)
+                       label='平均价格' if use_chinese else 'Avg Price', color='#45B7D1', alpha=0.8)
         ax2_twin = ax2.twinx()
-        line2 = ax2_twin.plot(x, package_analysis['总间晚数'], 's-', color='#96CEB4', linewidth=2, label='总间晚数')
+        line2 = ax2_twin.plot(x, package_analysis['总间晚数'], 's-', color='#96CEB4', linewidth=2, 
+                              label='总间晚数' if use_chinese else 'Total Nights')
         
-        ax2.set_title('各套餐平均价格与总间晚数', fontweight='bold', fontsize=12)
-        ax2.set_xlabel('套餐ID')
-        ax2.set_ylabel('平均价格 (¥)', color='#45B7D1')
-        ax2_twin.set_ylabel('总间晚数', color='#96CEB4')
+        ax2.set_title('各套餐平均价格与总间晚数' if use_chinese else 'Price & Nights by Package', fontweight='bold', fontsize=12)
+        ax2.set_xlabel('套餐ID' if use_chinese else 'Package ID', fontsize=12)
+        ax2.set_ylabel('平均价格 (¥)' if use_chinese else 'Avg Price (¥)', color='#45B7D1', fontsize=12)
+        ax2_twin.set_ylabel('总间晚数' if use_chinese else 'Total Nights', color='#96CEB4', fontsize=12)
         ax2.set_xticks(x)
-        ax2.set_xticklabels([f"套餐{pid}" for pid in package_analysis.index], rotation=45, ha='right')
+        ax2.set_xticklabels([f"套餐{pid}" if use_chinese else f"Package {pid}" for pid in package_analysis.index], rotation=45, ha='right')
         ax2.grid(True, alpha=0.3)
     
     # 3. 套餐收入占比饼图
     colors = plt.cm.Set3(np.linspace(0, 1, len(package_analysis)))
     wedges, texts, autotexts = ax3.pie(package_analysis['收入占比(%)'], 
-                                       labels=[f"套餐{pid}" for pid in package_analysis.index], 
+                                       labels=[f"套餐{pid}" if use_chinese else f"Package {pid}" for pid in package_analysis.index], 
                                        autopct='%1.1f%%', colors=colors, startangle=90)
-    ax3.set_title('各套餐收入占比', fontweight='bold', fontsize=12)
+    ax3.set_title('各套餐收入占比' if use_chinese else 'Revenue Share by Package', fontweight='bold', fontsize=12)
     
     # 4. 套餐预订趋势
     if package_trend is not None:
         for i, col in enumerate(package_trend.columns):
             ax4.plot(package_trend.index, package_trend[col], 'o-', linewidth=2, 
-                    label=f"套餐{col}", color=colors[i], alpha=0.8)
-        ax4.set_title('套餐预订趋势', fontweight='bold', fontsize=12)
-        ax4.set_xlabel('日期')
-        ax4.set_ylabel('订单数')
+                    label=f"套餐{col}" if use_chinese else f"Package {col}", color=colors[i], alpha=0.8)
+        ax4.set_title('套餐预订趋势' if use_chinese else 'Package Booking Trend', fontweight='bold', fontsize=12)
+        ax4.set_xlabel('日期' if use_chinese else 'Date', fontsize=12)
+        ax4.set_ylabel('订单数' if use_chinese else 'Orders', fontsize=12)
         ax4.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
         ax4.grid(True, alpha=0.3)
         ax4.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
@@ -575,18 +615,18 @@ def main():
     uploaded_file = st.sidebar.file_uploader(
         "上传预约入住明细Excel文件", 
         type=['xlsx', 'xls'],
-        help="请上传包含预约入住明细的Excel文件"
+        help="请上传包含预约入住明细的Excel文件" if plt.rcParams['font.sans-serif'][0] != 'DejaVu Sans' else "Upload Excel file with booking details"
     )
     
     # 酒店配置（修复版）
     total_rooms, room_config = configure_hotel_rooms()
     
     if uploaded_file is None:
-        st.warning("请在左侧边栏上传Excel数据文件，并配置酒店房间信息")
+        st.warning("请在左侧边栏上传Excel数据文件，并配置酒店房间信息" if plt.rcParams['font.sans-serif'][0] != 'DejaVu Sans' else "Please upload Excel file and configure hotel rooms in sidebar")
         st.stop()
     
     # 加载数据
-    with st.spinner("正在加载和预处理数据..."):
+    with st.spinner("正在加载和预处理数据..." if plt.rcParams['font.sans-serif'][0] != 'DejaVu Sans' else "Loading and preprocessing data..."):
         df, valid_df = load_and_preprocess_data(uploaded_file)
         st.session_state['valid_df'] = valid_df
     
@@ -618,44 +658,57 @@ def main():
     
     # 侧边栏分析选项
     st.sidebar.markdown("### 📈 分析选项")
+    analysis_options = [
+        "数据概览", "房型深度分析", "预订趋势分析", "入住间夜分析", 
+        "入住时间分析", "购买预约时间差", "OCC分析", "套餐分析", "详细数据"
+    ]
+    analysis_options_en = [
+        "Data Overview", "Room Type Analysis", "Booking Trend", "Room Night Analysis",
+        "Check-in Time Analysis", "Purchase-Booking Gap", "OCC Analysis", "Package Analysis", "Detailed Data"
+    ]
+    use_chinese = plt.rcParams['font.sans-serif'][0] != 'DejaVu Sans'
     analysis_type = st.sidebar.radio(
-        "选择分析类型",
-        ["数据概览", "房型深度分析", "预订趋势分析", "入住间夜分析", 
-         "入住时间分析", "购买预约时间差", "OCC分析", "套餐分析", "详细数据"]
+        "选择分析类型" if use_chinese else "Select Analysis Type",
+        analysis_options if use_chinese else analysis_options_en
     )
     
+    # 映射回中文（内部处理用）
+    if not use_chinese:
+        analysis_type_map = dict(zip(analysis_options_en, analysis_options))
+        analysis_type = analysis_type_map[analysis_type]
+    
     # 主内容区域
-    st.title("🏨 酒店预约入住数据分析系统")
+    st.title("🏨 酒店预约入住数据分析系统" if use_chinese else "🏨 Hotel Booking & Check-in Analysis System")
     st.markdown("---")
     
     # 数据为空判断
     if len(valid_df) == 0:
-        st.error("⚠️ 没有有效数据，请检查上传的文件或筛选条件")
+        st.error("⚠️ 没有有效数据，请检查上传的文件或筛选条件" if use_chinese else "⚠️ No valid data, check file or filter conditions")
         st.stop()
     
     # ----------------------
     # 各分析模块实现
     # ----------------------
     if analysis_type == "数据概览":
-        st.header("📊 数据整体概览")
+        st.header("📊 数据整体概览" if use_chinese else "📊 Data Overview")
         
         # 关键指标卡片
         col1, col2, col3, col4, col5 = st.columns(5)
         
         with col1:
-            st.metric("总预约单数", f"{len(valid_df):,}")
+            st.metric("总预约单数" if use_chinese else "Total Bookings", f"{len(valid_df):,}")
         
         with col2:
             total_room_nights = valid_df['入住天数'].sum() if '入住天数' in valid_df.columns else 0
-            st.metric("总间夜数", f"{total_room_nights:,}")
+            st.metric("总间夜数" if use_chinese else "Total Room Nights", f"{total_room_nights:,}")
         
         with col3:
             avg_adr = valid_df['ADR'].mean() if 'ADR' in valid_df.columns and not pd.isna(valid_df['ADR']).all() else 0
-            st.metric("平均ADR", f"¥{avg_adr:.2f}")
+            st.metric("平均ADR" if use_chinese else "Avg ADR", f"¥{avg_adr:.2f}")
         
         with col4:
             total_revenue = valid_df['订单实收'].sum() if '订单实收' in valid_df.columns else 0
-            st.metric("总实收金额", f"¥{total_revenue:,.2f}")
+            st.metric("总实收金额" if use_chinese else "Total Revenue", f"¥{total_revenue:,.2f}")
         
         with col5:
             if '入住天数' in valid_df.columns and '入住日期' in valid_df.columns:
@@ -663,21 +716,25 @@ def main():
                 date_end = valid_df['入住日期'].max()
                 date_range_days = max(1, (date_end - date_start).days + 1)
                 overall_occ = calculate_occ(total_room_nights, total_rooms, date_range_days)
-                st.metric("整体OCC", f"{overall_occ}%")
+                st.metric("整体OCC" if use_chinese else "Overall OCC", f"{overall_occ}%")
             else:
-                st.metric("整体OCC", "N/A")
+                st.metric("整体OCC" if use_chinese else "Overall OCC", "N/A")
         
         st.markdown("---")
         
         # 核心统计信息
-        st.subheader("核心运营指标")
+        st.subheader("核心运营指标" if use_chinese else "Core Operational Metrics")
         stats_data = {
-            "指标": [
+            "指标" if use_chinese else "Metric": [
                 "预约订单数", "总间夜数", "平均间晚数", "平均ADR",
                 "总实收金额", "整体OCC", "主要房型", "入住日期范围",
                 "节假日订单占比", "平均购买-预约时间差"
+            ] if use_chinese else [
+                "Total Bookings", "Total Room Nights", "Avg Nights/Order", "Avg ADR",
+                "Total Revenue", "Overall OCC", "Top Room Type", "Check-in Date Range",
+                "Holiday Order %", "Avg Purchase-Booking Gap"
             ],
-            "数值": [
+            "数值" if use_chinese else "Value": [
                 f"{len(valid_df):,}",
                 f"{valid_df['入住天数'].sum():,}" if '入住天数' in valid_df.columns else "N/A",
                 f"{valid_df['入住天数'].mean():.1f} 天/单" if '入住天数' in valid_df.columns else "N/A",
@@ -694,49 +751,49 @@ def main():
         st.dataframe(stats_df, use_container_width=True)
     
     elif analysis_type == "房型深度分析":
-        st.header("🏠 房型深度分析")
+        st.header("🏠 房型深度分析" if use_chinese else "🏠 Room Type Analysis")
         
         # 执行分析
         room_analysis = analyze_room_type_performance(valid_df, room_config)
         
         if room_analysis is None:
-            st.warning("⚠️ 缺少房型分析所需字段（预约房型/入住日期）")
+            st.warning("⚠️ 缺少房型分析所需字段（预约房型/入住日期）" if use_chinese else "⚠️ Missing fields for room type analysis (room type/check-in date)")
         else:
             # 显示数据表格
-            st.subheader("1. 房型性能指标汇总")
+            st.subheader("1. 房型性能指标汇总" if use_chinese else "1. Room Type Performance Metrics")
             st.dataframe(room_analysis, use_container_width=True)
             
             # 可视化
-            st.subheader("2. 房型分析可视化")
+            st.subheader("2. 房型分析可视化" if use_chinese else "2. Room Type Visualization")
             fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
             
             # 房型订单数对比
             room_orders = room_analysis['订单数'].sort_values(ascending=False)
             ax1.bar(room_orders.index, room_orders.values, color='#FF6B6B', alpha=0.8)
-            ax1.set_title('各房型订单数', fontweight='bold')
+            ax1.set_title('各房型订单数' if use_chinese else 'Orders by Room Type', fontweight='bold')
             ax1.tick_params(axis='x', rotation=45)
             
             # 房型OCC对比
             room_occ = room_analysis['房型OCC(%)'].sort_values(ascending=False)
             ax2.bar(room_occ.index, room_occ.values, color='#4ECDC4', alpha=0.8)
-            ax2.set_title('各房型OCC', fontweight='bold')
-            ax2.set_ylabel('OCC (%)')
+            ax2.set_title('各房型OCC' if use_chinese else 'OCC by Room Type', fontweight='bold')
+            ax2.set_ylabel('OCC (%)', fontsize=12)
             ax2.tick_params(axis='x', rotation=45)
             
             plt.tight_layout()
             st.pyplot(fig)
     
     elif analysis_type == "预订趋势分析":
-        st.header("📈 预订趋势分析")
+        st.header("📈 预订趋势分析" if use_chinese else "📈 Booking Trend Analysis")
         
         fig = plot_booking_trend(valid_df)
         if fig is None:
-            st.warning("⚠️ 缺少预约时间字段，无法生成趋势图")
+            st.warning("⚠️ 缺少预约时间字段，无法生成趋势图" if use_chinese else "⚠️ Missing booking time field, cannot generate trend chart")
         else:
             st.pyplot(fig)
             
             # 额外统计
-            st.subheader("预订趋势关键指标")
+            st.subheader("预订趋势关键指标" if use_chinese else "Booking Trend Key Metrics")
             if '预约时间' in valid_df.columns:
                 daily_avg = valid_df.groupby(valid_df['预约时间'].dt.date).size().mean()
                 peak_day = valid_df.groupby(valid_df['预约时间'].dt.date).size().idxmax()
@@ -744,23 +801,23 @@ def main():
                 
                 col1, col2, col3 = st.columns(3)
                 with col1:
-                    st.metric("日均预约量", f"{daily_avg:.1f}")
+                    st.metric("日均预约量" if use_chinese else "Avg Daily Bookings", f"{daily_avg:.1f}")
                 with col2:
-                    st.metric("预约峰值日期", peak_day.strftime('%Y-%m-%d'))
+                    st.metric("预约峰值日期" if use_chinese else "Peak Booking Date", peak_day.strftime('%Y-%m-%d'))
                 with col3:
-                    st.metric("峰值预约量", f"{peak_value:,}")
+                    st.metric("峰值预约量" if use_chinese else "Peak Bookings", f"{peak_value:,}")
     
     elif analysis_type == "入住间夜分析":
-        st.header("🌙 入住间夜分析")
+        st.header("🌙 入住间夜分析" if use_chinese else "🌙 Room Night Analysis")
         
         fig = plot_room_night_analysis(valid_df)
         if fig is None:
-            st.warning("⚠️ 缺少入住日期/入住天数字段，无法生成间夜分析图")
+            st.warning("⚠️ 缺少入住日期/入住天数字段，无法生成间夜分析图" if use_chinese else "⚠️ Missing check-in date/nights field, cannot generate room night chart")
         else:
             st.pyplot(fig)
             
             # 额外统计
-            st.subheader("间夜分析关键指标")
+            st.subheader("间夜分析关键指标" if use_chinese else "Room Night Key Metrics")
             if '入住天数' in valid_df.columns:
                 avg_nights = valid_df['入住天数'].mean()
                 total_nights = valid_df['入住天数'].sum()
@@ -768,24 +825,24 @@ def main():
                 
                 col1, col2, col3 = st.columns(3)
                 with col1:
-                    st.metric("平均每单间晚数", f"{avg_nights:.1f}")
+                    st.metric("平均每单间晚数" if use_chinese else "Avg Nights/Order", f"{avg_nights:.1f}")
                 with col2:
-                    st.metric("总间夜数", f"{total_nights:,}")
+                    st.metric("总间夜数" if use_chinese else "Total Room Nights", f"{total_nights:,}")
                 with col3:
-                    st.metric("最大单次间夜数", f"{max_single_night}")
+                    st.metric("最大单次间夜数" if use_chinese else "Max Single Order Nights", f"{max_single_night}")
     
     elif analysis_type == "入住时间分析":
-        st.header("⏰ 入住时间分析")
+        st.header("⏰ 入住时间分析" if use_chinese else "⏰ Check-in Time Analysis")
         
         fig = plot_checkin_time_analysis(valid_df)
         st.pyplot(fig)
     
     elif analysis_type == "购买预约时间差":
-        st.header("🕒 购买-预约时间差分析")
+        st.header("🕒 购买-预约时间差分析" if use_chinese else "🕒 Purchase-Booking Gap Analysis")
         
         fig = plot_purchase_booking_gap(valid_df)
         if fig is None:
-            st.warning("⚠️ 缺少下单时间/预约时间字段，无法生成时间差分析图")
+            st.warning("⚠️ 缺少下单时间/预约时间字段，无法生成时间差分析图" if use_chinese else "⚠️ Missing purchase/booking time field, cannot generate gap chart")
         else:
             st.pyplot(fig)
             
@@ -798,16 +855,16 @@ def main():
                     
                     col1, col2 = st.columns(2)
                     with col1:
-                        st.metric("平均购买-预约时间差", f"{avg_gap:.1f} 小时")
+                        st.metric("平均购买-预约时间差" if use_chinese else "Avg Purchase-Booking Gap", f"{avg_gap:.1f} 小时" if use_chinese else f"{avg_gap:.1f} Hours")
                     with col2:
-                        st.metric("中位购买-预约时间差", f"{median_gap:.1f} 小时")
+                        st.metric("中位购买-预约时间差" if use_chinese else "Median Purchase-Booking Gap", f"{median_gap:.1f} 小时" if use_chinese else f"{median_gap:.1f} Hours")
     
     elif analysis_type == "OCC分析":
-        st.header("📊 OCC（入住率）分析")
+        st.header("📊 OCC（入住率）分析" if use_chinese else "📊 OCC (Occupancy) Analysis")
         
         fig = plot_occ_analysis(valid_df, total_rooms)
         if fig is None:
-            st.warning("⚠️ 缺少入住日期/入住天数字段，无法生成OCC分析图")
+            st.warning("⚠️ 缺少入住日期/入住天数字段，无法生成OCC分析图" if use_chinese else "⚠️ Missing check-in date/nights field, cannot generate OCC chart")
         else:
             st.pyplot(fig)
             
@@ -821,7 +878,10 @@ def main():
                 
                 # 按星期计算OCC
                 week_occ = {}
-                for week in ['星期一', '星期二', '星期三', '星期四', '星期五', '星期六', '星期日']:
+                week_names = ['星期一', '星期二', '星期三', '星期四', '星期五', '星期六', '星期日'] if use_chinese else ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+                week_mapping = dict(zip(['星期一', '星期二', '星期三', '星期四', '星期五', '星期六', '星期日'] if use_chinese else ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'], 
+                                       ['星期一', '星期二', '星期三', '星期四', '星期五', '星期六', '星期日']))
+                for week in week_names:
                     week_df = valid_df[valid_df['入住星期中文'] == week] if '入住星期中文' in valid_df.columns else valid_df
                     week_nights = week_df['入住天数'].sum()
                     week_days = len(week_df['入住日期'].dt.date.unique())
@@ -829,48 +889,48 @@ def main():
                 
                 col1, col2 = st.columns(2)
                 with col1:
-                    st.metric("整体OCC", f"{overall_occ:.1f}%")
+                    st.metric("整体OCC" if use_chinese else "Overall OCC", f"{overall_occ:.1f}%")
                 with col2:
                     max_week = max(week_occ.items(), key=lambda x: x[1])
-                    st.metric("OCC最高的星期", f"{max_week[0]} ({max_week[1]:.1f}%)")
+                    st.metric("OCC最高的星期" if use_chinese else "Week with Highest OCC", f"{max_week[0]} ({max_week[1]:.1f}%)")
     
     elif analysis_type == "套餐分析":
-        st.header("📦 套餐分析（按商品ID）")
+        st.header("📦 套餐分析（按商品ID）" if use_chinese else "📦 Package Analysis (by Product ID)")
         
         if '商品ID' not in valid_df.columns:
-            st.warning("⚠️ 数据中缺少商品ID字段，无法进行套餐分析")
+            st.warning("⚠️ 数据中缺少商品ID字段，无法进行套餐分析" if use_chinese else "⚠️ Missing product ID field, cannot perform package analysis")
         else:
             # 套餐筛选
             package_ids = valid_df['商品ID'].unique()
             selected_packages = st.multiselect(
-                "选择套餐（按商品ID）",
+                "选择套餐（按商品ID）" if use_chinese else "Select Packages (by Product ID)",
                 package_ids,
                 default=package_ids,
-                help="选择要分析的套餐"
+                help="选择要分析的套餐" if use_chinese else "Select packages to analyze"
             )
             
             filtered_df = valid_df[valid_df['商品ID'].isin(selected_packages)]
             
             if len(filtered_df) == 0:
-                st.warning("⚠️ 没有符合筛选条件的套餐数据")
+                st.warning("⚠️ 没有符合筛选条件的套餐数据" if use_chinese else "⚠️ No package data matches filter conditions")
             else:
                 # 执行分析
                 package_analysis, package_trend = analyze_packages(filtered_df)
                 
                 if package_analysis is None:
-                    st.warning("⚠️ 套餐分析失败，请检查数据格式")
+                    st.warning("⚠️ 套餐分析失败，请检查数据格式" if use_chinese else "⚠️ Package analysis failed, check data format")
                 else:
                     # 显示分析结果
-                    st.subheader("1. 套餐性能指标汇总")
+                    st.subheader("1. 套餐性能指标汇总" if use_chinese else "1. Package Performance Metrics")
                     st.dataframe(package_analysis, use_container_width=True)
                     
                     # 可视化
-                    st.subheader("2. 套餐分析可视化")
+                    st.subheader("2. 套餐分析可视化" if use_chinese else "2. Package Visualization")
                     fig = plot_package_analysis(package_analysis, package_trend)
                     st.pyplot(fig)
                     
                     # 关键洞察
-                    st.subheader("3. 关键洞察")
+                    st.subheader("3. 关键洞察" if use_chinese else "3. Key Insights")
                     col1, col2, col3 = st.columns(3)
                     
                     with col1:
@@ -881,6 +941,12 @@ def main():
                         套餐名称: {package_analysis.loc[top_package, '套餐名称']}  
                         订单数: {package_analysis.loc[top_package, '订单数']:,}  
                         订单占比: {package_analysis.loc[top_package, '订单占比(%)']}%
+                        """ if use_chinese else f"""
+                        **Most Popular Package**  
+                        Package ID: {top_package}  
+                        Package Name: {package_analysis.loc[top_package, '套餐名称']}  
+                        Orders: {package_analysis.loc[top_package, '订单数']:,}  
+                        Order Share: {package_analysis.loc[top_package, '订单占比(%)']}%
                         """)
                     
                     with col2:
@@ -892,6 +958,12 @@ def main():
                             套餐名称: {package_analysis.loc[highest_rev_package, '套餐名称']}  
                             总收入: ¥{package_analysis.loc[highest_rev_package, '总收入']:,.2f}  
                             收入占比: {package_analysis.loc[highest_rev_package, '收入占比(%)']}%
+                            """ if use_chinese else f"""
+                            **Highest Revenue Package**  
+                            Package ID: {highest_rev_package}  
+                            Package Name: {package_analysis.loc[highest_rev_package, '套餐名称']}  
+                            Total Revenue: ¥{package_analysis.loc[highest_rev_package, '总收入']:,.2f}  
+                            Revenue Share: {package_analysis.loc[highest_rev_package, '收入占比(%)']}%
                             """)
                     
                     with col3:
@@ -903,18 +975,26 @@ def main():
                             套餐名称: {package_analysis.loc[highest_price_package, '套餐名称']}  
                             平均价格: ¥{package_analysis.loc[highest_price_package, '平均价格']:.2f}  
                             平均间晚数: {package_analysis.loc[highest_price_package, '平均间晚数']:.1f}
+                            """ if use_chinese else f"""
+                            **Highest Price Package**  
+                            Package ID: {highest_price_package}  
+                            Package Name: {package_analysis.loc[highest_price_package, '套餐名称']}  
+                            Avg Price: ¥{package_analysis.loc[highest_price_package, '平均价格']:.2f}  
+                            Avg Nights: {package_analysis.loc[highest_price_package, '平均间晚数']:.1f}
                             """)
     
     elif analysis_type == "详细数据":
-        st.header("📋 详细数据查看")
+        st.header("📋 详细数据查看" if use_chinese else "📋 Detailed Data View")
         
         # 数据筛选
-        st.subheader("数据筛选")
+        st.subheader("数据筛选" if use_chinese else "Data Filter")
         col1, col2 = st.columns(2)
         with col1:
-            date_start = st.date_input("开始日期", value=valid_df['入住日期'].min().date() if '入住日期' in valid_df.columns else datetime.now().date())
+            date_start = st.date_input("开始日期" if use_chinese else "Start Date", 
+                                      value=valid_df['入住日期'].min().date() if '入住日期' in valid_df.columns else datetime.now().date())
         with col2:
-            date_end = st.date_input("结束日期", value=valid_df['入住日期'].max().date() if '入住日期' in valid_df.columns else datetime.now().date())
+            date_end = st.date_input("结束日期" if use_chinese else "End Date", 
+                                      value=valid_df['入住日期'].max().date() if '入住日期' in valid_df.columns else datetime.now().date())
         
         # 筛选数据
         filtered_data = valid_df.copy()
@@ -923,7 +1003,7 @@ def main():
                                          (filtered_data['入住日期'].dt.date <= date_end)]
         
         # 显示数据
-        st.subheader(f"筛选后数据（共 {len(filtered_data):,} 条）")
+        st.subheader(f"筛选后数据（共 {len(filtered_data):,} 条）" if use_chinese else f"Filtered Data ({len(filtered_data):,} records)")
         st.dataframe(filtered_data, use_container_width=True)
         
         # 数据导出
@@ -933,9 +1013,9 @@ def main():
         
         csv_data = convert_df_to_csv(filtered_data)
         st.download_button(
-            label="📥 导出筛选后数据为CSV",
+            label="📥 导出筛选后数据为CSV" if use_chinese else "📥 Export Filtered Data as CSV",
             data=csv_data,
-            file_name=f"酒店数据_{date_start}_{date_end}.csv",
+            file_name=f"酒店数据_{date_start}_{date_end}.csv" if use_chinese else f"hotel_data_{date_start}_{date_end}.csv",
             mime="text/csv"
         )
 
