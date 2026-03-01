@@ -14,34 +14,32 @@ warnings.filterwarnings('ignore')
 # 关键修复：适配Streamlit Cloud的中文字体设置
 # ----------------------
 def setup_chinese_font():
-    """配置中文字体，适配本地/云端环境"""
-    # 方案1：尝试加载系统可用的中文字体
-    font_options = [
-        'WenQuanYi Zen Hei',  # Linux系统默认开源中文字体
-        'DejaVu Sans',        # 兜底英文字体
-        'Liberation Sans',
-        'Arial Unicode MS',   # Mac系统
-        'SimHei',             # Windows系统
-        'Microsoft YaHei'
-    ]
+    """配置中文字体，优先加载仓库中的SimHei.ttf"""
+    import os
+    from matplotlib import font_manager
+    import matplotlib.pyplot as plt
     
-    # 设置字体
-    plt.rcParams['font.sans-serif'] = font_options
-    plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示问题
+    # 1. 优先加载仓库中的SimHei.ttf字体文件
+    font_path = os.path.join(os.path.dirname(__file__), 'SimHei.ttf')
+    if os.path.exists(font_path):
+        try:
+            # 加载自定义字体
+            font_prop = font_manager.FontProperties(fname=font_path)
+            font_name = font_prop.get_name()
+            
+            # 全局设置字体
+            plt.rcParams['font.family'] = font_name
+            plt.rcParams['font.sans-serif'] = [font_name]
+            plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示问题
+            st.success("✅ 成功加载中文字体 SimHei")
+            return
+        except Exception as e:
+            st.warning(f"⚠️ 加载自定义字体失败: {str(e)}")
     
-    # 额外保障：强制设置matplotlib的字体缓存
-    plt.rcParams['font.family'] = 'sans-serif'
-    
-    # 验证字体是否生效（调试用）
-    try:
-        # 测试中文渲染
-        fig, ax = plt.subplots(figsize=(1,1))
-        ax.text(0.5, 0.5, '测试中文', fontsize=12)
-        plt.close(fig)
-    except:
-        # 如果仍有问题，使用matplotlib默认字体并转英文（兜底）
-        plt.rcParams['font.sans-serif'] = ['DejaVu Sans']
-        st.warning("⚠️ 云端环境无中文字体，部分标签将显示英文")
+    # 2. 兜底方案：使用系统字体
+    plt.rcParams['font.sans-serif'] = ['WenQuanYi Zen Hei', 'DejaVu Sans']
+    plt.rcParams['axes.unicode_minus'] = False
+    st.info("ℹ️ 使用系统兜底字体，部分中文可能显示异常")
 
 # 执行字体配置
 setup_chinese_font()
