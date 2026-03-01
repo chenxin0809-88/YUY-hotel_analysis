@@ -9,6 +9,9 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # 设置中文字体（适配不同系统）
+# 设置中文字体（适配Streamlit Cloud）
+plt.rcParams['font.sans-serif'] = ['WenQuanYi Zen Hei', 'DejaVu Sans', 'Liberation Sans']
+plt.rcParams['axes.unicode_minus'] = False
 plt.rcParams['font.sans-serif'] = ['WenQuanYi Zen Hei', 'SimHei', 'Arial Unicode MS', 'DejaVu Sans']
 plt.rcParams['axes.unicode_minus'] = False
 
