@@ -656,6 +656,84 @@ def plot_package_analysis(package_analysis, package_trend):
     return fig
 
 # ----------------------
+# 新增：预约-入住时差分析函数
+# ----------------------
+def analyze_booking_checkin_gap(df):
+    """分析预约时间与入住时间的差"""
+    if '预约时间' not in df.columns or '入住日期' not in df.columns:
+        return None
+    
+    # 计算时差（天）
+    df['预约入住时差_天'] = (df['入住日期'].dt.date - df['预约时间'].dt.date).dt.days
+    df['预约入住时差_天'] = df['预约入住时差_天'].clip(lower=0)  # 排除负数
+    
+    # 分组统计
+    bins = [0, 1, 3, 7, 15, 30, 90, float('inf')]
+    labels = ['0-1天', '1-3天', '3-7天', '7-15天', '15-30天', '30-90天', '90天以上']
+    df['时差分组'] = pd.cut(df['预约入住时差_天'], bins=bins, labels=labels, right=False)
+    
+    # 统计结果
+    gap_stats = df['时差分组'].value_counts().sort_index()
+    gap_summary = {
+        '平均时差(天)': round(df['预约入住时差_天'].mean(), 1),
+        '中位时差(天)': df['预约入住时差_天'].median(),
+        '最集中时段': gap_stats.idxmax(),
+        '总订单数': len(df)
+    }
+    
+    return df, gap_stats, gap_summary
+
+def plot_booking_checkin_gap_analysis(df, gap_stats):
+    """绘制预约-入住时差分析图表"""
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
+    
+    # 1. 时差分组分布（柱状图）
+    ax1.bar(gap_stats.index, gap_stats.values, color='#6C5CE7', alpha=0.8)
+    ax1.set_title('预约-入住时差分组分布', fontproperties=chinese_font, fontsize=14, fontweight='bold')
+    ax1.set_xlabel('时差分组', fontproperties=chinese_font, fontsize=12)
+    ax1.set_ylabel('订单数', fontproperties=chinese_font, fontsize=12)
+    ax1.tick_params(axis='x', rotation=45)
+    for label in ax1.get_xticklabels() + ax1.get_yticklabels():
+        label.set_fontproperties(chinese_font)
+    
+    # 2. 时差分布直方图
+    gap_data = df['预约入住时差_天'].dropna()
+    gap_data = gap_data[gap_data >= 0]
+    ax2.hist(gap_data, bins=20, color='#FD79A8', alpha=0.7, edgecolor='black')
+    ax2.set_title('预约-入住时差分布（天）', fontproperties=chinese_font, fontsize=14, fontweight='bold')
+    ax2.set_xlabel('时差（天）', fontproperties=chinese_font, fontsize=12)
+    ax2.set_ylabel('订单数', fontproperties=chinese_font, fontsize=12)
+    for label in ax2.get_xticklabels() + ax2.get_yticklabels():
+        label.set_fontproperties(chinese_font)
+    
+    # 3. 按星期分析时差
+    if '入住星期中文' in df.columns:
+        week_gap = df.groupby('入住星期中文')['预约入住时差_天'].mean().reindex(
+            ['星期一', '星期二', '星期三', '星期四', '星期五', '星期六', '星期日']
+        )
+        ax3.bar(week_gap.index, week_gap.values, color='#00B894', alpha=0.8)
+        ax3.set_title('各星期平均预约-入住时差', fontproperties=chinese_font, fontsize=14, fontweight='bold')
+        ax3.set_xlabel('星期', fontproperties=chinese_font, fontsize=12)
+        ax3.set_ylabel('平均时差（天）', fontproperties=chinese_font, fontsize=12)
+        ax3.tick_params(axis='x', rotation=45)
+        for label in ax3.get_xticklabels() + ax3.get_yticklabels():
+            label.set_fontproperties(chinese_font)
+    
+    # 4. 按月分析时差
+    if '入住月份' in df.columns:
+        month_gap = df.groupby('入住月份')['预约入住时差_天'].mean()
+        ax4.plot(month_gap.index, month_gap.values, 'o-', color='#E17055', linewidth=2, markersize=6)
+        ax4.set_title('各月平均预约-入住时差', fontproperties=chinese_font, fontsize=14, fontweight='bold')
+        ax4.set_xlabel('月份', fontproperties=chinese_font, fontsize=12)
+        ax4.set_ylabel('平均时差（天）', fontproperties=chinese_font, fontsize=12)
+        ax4.set_xticks(range(1, 13))
+        for label in ax4.get_xticklabels() + ax4.get_yticklabels():
+            label.set_fontproperties(chinese_font)
+    
+    plt.tight_layout()
+    return fig
+
+# ----------------------
 # 主页面内容
 # ----------------------
 def main():
@@ -715,11 +793,12 @@ def main():
             overall_occ = calculate_occ(total_room_nights, total_rooms, date_range_days)
             st.sidebar.metric("整体OCC", f"{overall_occ}%")
     
-    # 侧边栏分析选项
+    # 侧边栏分析选项（新增预约-入住时差分析）
     st.sidebar.markdown("### 📈 分析选项")
     analysis_options = [
         "数据概览", "房型深度分析", "预订趋势分析", "入住间夜分析", 
-        "入住时间分析", "购买预约时间差", "OCC分析", "套餐分析", "详细数据"
+        "入住时间分析", "购买预约时间差", "OCC分析", "套餐分析", 
+        "预约-入住时差分析", "详细数据"
     ]
     analysis_type = st.sidebar.radio(
         "选择分析类型",
@@ -1018,6 +1097,44 @@ def main():
                             平均价格: ¥{package_analysis.loc[highest_price_package, '平均价格']:.2f}  
                             平均间晚数: {package_analysis.loc[highest_price_package, '平均间晚数']:.1f}
                             """)
+    
+    # ----------------------
+    # 新增：预约-入住时差分析模块
+    # ----------------------
+    elif analysis_type == "预约-入住时差分析":
+        st.header("⏱️ 预约-入住时差分析")
+        
+        if '预约时间' not in valid_df.columns or '入住日期' not in valid_df.columns:
+            st.warning("⚠️ 缺少预约时间或入住日期字段，无法进行时差分析")
+        else:
+            # 执行分析
+            df_with_gap, gap_stats, gap_summary = analyze_booking_checkin_gap(valid_df)
+            
+            # 显示关键指标
+            st.subheader("1. 时差核心指标")
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("平均时差(天)", gap_summary['平均时差(天)'])
+            with col2:
+                st.metric("中位时差(天)", gap_summary['中位时差(天)'])
+            with col3:
+                st.metric("最集中时段", gap_summary['最集中时段'])
+            with col4:
+                st.metric("总订单数", gap_summary['总订单数'])
+            
+            # 可视化
+            st.subheader("2. 时差分析可视化")
+            fig = plot_booking_checkin_gap_analysis(df_with_gap, gap_stats)
+            st.pyplot(fig)
+            
+            # 分组详情
+            st.subheader("3. 时差分组详情")
+            gap_detail = pd.DataFrame({
+                '时差分组': gap_stats.index,
+                '订单数': gap_stats.values,
+                '占比(%)': (gap_stats.values / gap_stats.sum() * 100).round(1)
+            })
+            st.dataframe(gap_detail, use_container_width=True)
     
     elif analysis_type == "详细数据":
         st.header("📋 详细数据查看")
