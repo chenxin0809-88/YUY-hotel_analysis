@@ -10,7 +10,21 @@ st.title("🏨 酒店精细化运营与OCC分析系统")
 st.markdown("通过精细化拆解订单日期，实现基于具体日期、房型、真实可用房量的深入分析。")
 
 # 1. 侧边栏：文件上传
-uploaded_file = st.sidebar.file_uploader("📂 上传预约明细 CSV 文件", type="csv")
+uploaded_file = st.sidebar.file_uploader("📂 上传预约明细文件", type=["csv", "xlsx", "xls"])
+
+if uploaded_file is not None:
+    # --- 根据后缀名自动选择读取方式 ---
+    try:
+        if uploaded_file.name.endswith('.csv'):
+            df = pd.read_csv(uploaded_file)
+        else:
+            # 读取 Excel 时，如果有多个 Sheet，默认读取第一个
+            df = pd.read_excel(uploaded_file)
+    except Exception as e:
+        st.error(f"文件读取失败，请确保格式正确。错误信息: {e}")
+        st.stop()
+    
+    # 后面的处理逻辑保持不变...
 
 if uploaded_file is not None:
     # --- 数据加载与预处理 ---
