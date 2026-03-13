@@ -4,200 +4,156 @@ import plotly.express as px
 import plotly.graph_objects as go
 import re
 
-st.set_page_config(page_title="酒店精细化运营看板", layout="wide")
+# 设置页面
+st.set_page_config(page_title="酒店经营精细化看板", layout="wide")
 
-st.title("🏨 酒店精细化运营与OCC分析系统")
-st.markdown("通过精细化拆解订单日期，实现基于具体日期、房型、真实可用房量的深入分析。")
+st.title("🏨 酒店预约明细与 OCC 精细化分析系统")
+st.markdown("支持上传 Excel/CSV，自定义房量库存，自动拆解每日入住情况。")
 
-# 1. 侧边栏：文件上传
-uploaded_file = st.sidebar.file_uploader("📂 上传预约明细文件", type=["csv", "xlsx", "xls"])
+# 1. 文件上传与预处理
+st.sidebar.header("📁 数据导入")
+uploaded_file = st.sidebar.file_uploader("上传预约明细 (Excel 或 CSV)", type=["csv", "xlsx", "xls"])
 
 if uploaded_file is not None:
-    # --- 根据后缀名自动选择读取方式 ---
     try:
+        # 判断格式读取
         if uploaded_file.name.endswith('.csv'):
             df = pd.read_csv(uploaded_file)
         else:
-            # 读取 Excel 时，如果有多个 Sheet，默认读取第一个
             df = pd.read_excel(uploaded_file)
-    except Exception as e:
-        st.error(f"文件读取失败，请确保格式正确。错误信息: {e}")
-        st.stop()
-    
-    # 后面的处理逻辑保持不变...
-
-if uploaded_file is not None:
-    # --- 数据加载与预处理 ---
-    df = pd.read_csv(uploaded_file)
-    
-    # 过滤有效预约（假设状态为"预约成功"，根据你的实际数据调整）
-    # 如果要看所有状态，可以注释掉这行，但算OCC通常只看有效单
-    if '预约状态' in df.columns:
-        df_valid = df[df['预约状态'] == '预约成功'].copy()
-    else:
-        df_valid = df.copy()
-
-    # 清洗日期格式
-    df_valid['入住日期'] = pd.to_datetime(df_valid['入住日期'], errors='coerce')
-    df_valid['离店日期'] = pd.to_datetime(df_valid['离店日期'], errors='coerce')
-    
-    # 从“间晚”字段提取房间数量 (例如 "1间2晚" 提取 "1")
-    def extract_rooms(text):
-        if pd.isna(text): return 1
-        match = re.search(r'(\d+)间', str(text))
-        return int(match.group(1)) if match else 1
-
-    df_valid['房间数'] = df_valid['间晚'].apply(extract_rooms)
-
-    # --- 用户自定义区域：房型库存配置 & 套餐简称映射 ---
-    st.sidebar.header("⚙️ 运营参数配置")
-    st.sidebar.markdown("请在下方表格中补充**各类房型总数量**及**套餐简称**，以计算精准的OCC和简化图表。")
-    
-    # A. 房型库存配置
-    st.sidebar.subheader("1. 房型库存设置")
-    unique_rooms = df_valid['预约房型'].dropna().unique()
-    room_inventory_df = pd.DataFrame({
-        "预约房型": unique_rooms,
-        "每日总房量": [10] * len(unique_rooms) # 默认给10间，供用户修改
-    })
-    # 使用 st.data_editor 允许用户在网页上直接修改房量
-    edited_room_inventory = st.sidebar.data_editor(
-        room_inventory_df, 
-        column_config={"每日总房量": st.column_config.NumberColumn(min_value=1)},
-        hide_index=True, key="room_editor"
-    )
-    total_hotel_capacity = edited_room_inventory['每日总房量'].sum()
-
-    # B. 套餐(商品ID)简称配置
-    st.sidebar.subheader("2. 套餐(商品ID)简称设置")
-    if '商品ID' in df_valid.columns and '商品名称' in df_valid.columns:
-        unique_products = df_valid.drop_duplicates(subset=['商品ID'])[['商品ID', '商品名称']].copy()
-        # 默认截取前8个字符作为简称
-        unique_products['套餐简称'] = unique_products['商品名称'].apply(lambda x: str(x)[:8] + '...')
-        edited_products = st.sidebar.data_editor(
-            unique_products,
-            disabled=["商品ID", "商品名称"], # 禁止修改原ID和名称
-            hide_index=True, key="product_editor"
-        )
-        # 将简称映射回主数据
-        product_map = dict(zip(edited_products['商品ID'], edited_products['套餐简称']))
-        df_valid['套餐简称'] = df_valid['商品ID'].map(product_map)
-    else:
-        df_valid['套餐简称'] = df_valid['商品名称']
-
-    # --- 核心逻辑：将日期段“爆炸”展开为按天计算 ---
-    # 例如：入住23号，离店25号，拆解为23号和24号占用房间
-    expanded_rows = []
-    for _, row in df_valid.iterrows():
-        start = row['入住日期']
-        end = row['离店日期']
-        if pd.notna(start) and pd.notna(end) and start < end:
-            # 生成入住期间的每一天
-            dates = pd.date_range(start, end - pd.Timedelta(days=1))
-            for d in dates:
-                new_row = row.copy()
-                new_row['占用日期'] = d
-                expanded_rows.append(new_row)
-    
-    if not expanded_rows:
-        st.warning("有效入住日期数据不足，无法生成分析图表。")
-        st.stop()
-
-    df_daily = pd.DataFrame(expanded_rows)
-    df_daily['星期'] = df_daily['占用日期'].dt.day_name().map({
-        'Monday': '周一', 'Tuesday': '周二', 'Wednesday': '周三',
-        'Thursday': '周四', 'Friday': '周五', 'Saturday': '周六', 'Sunday': '周日'
-    })
-    
-    # --- 界面展示板块 ---
-
-    st.divider()
-    
-    # 板块 1: 入住 OCC 深度分析 (具体到日期与房量)
-    st.header("📈 日常 OCC (入住率) 分析")
-    
-    # 每日总占用房数
-    daily_occ = df_daily.groupby('占用日期')['房间数'].sum().reset_index()
-    daily_occ['总可用房量'] = total_hotel_capacity
-    daily_occ['OCC(%)'] = (daily_occ['房间数'] / daily_occ['总可用房量'] * 100).round(2)
-
-    fig_occ = px.line(daily_occ, x='占用日期', y='OCC(%)', markers=True, text='OCC(%)',
-                      title=f"全酒店每日总入住率 (基于配置的总房量: {total_hotel_capacity}间)")
-    fig_occ.update_traces(textposition="top center")
-    st.plotly_chart(fig_occ, use_container_width=True)
-
-    # OCC 文字总结
-    max_occ_row = daily_occ.loc[daily_occ['OCC(%)'].idxmax()]
-    avg_occ = daily_occ['OCC(%)'].mean()
-    st.info(f"💡 **OCC 分析总结：** 选定期间内，酒店平均入住率为 **{avg_occ:.1f}%**。入住率最高峰出现在 **{max_occ_row['占用日期'].strftime('%Y-%m-%d')}**，当天OCC达到 **{max_occ_row['OCC(%)']}%**（售出 {max_occ_row['房间数']} 间）。请重点关注低谷日期的营销动作。")
-
-    st.divider()
-
-    # 板块 2: 房型与具体房量分析
-    st.header("🛏️ 房型售卖占比分析")
-    col_room1, col_room2 = st.columns(2)
-    
-    room_sales = df_daily.groupby('预约房型')['房间数'].sum().reset_index()
-    
-    with col_room1:
-        fig_room_pie = px.pie(room_sales, names='预约房型', values='房间数', hole=0.4, title="各房型售卖间夜量占比")
-        fig_room_pie.update_traces(textinfo='percent+label')
-        st.plotly_chart(fig_room_pie, use_container_width=True)
-
-    with col_room2:
-        # 结合用户配置的房量看各房型的去化率
-        room_merged = pd.merge(room_sales, edited_room_inventory, on='预约房型')
-        # 这里的房型去化率简单计算为：总售出间夜 / (分析天数 * 该房型总数量)
-        analysis_days = df_daily['占用日期'].nunique() if not df_daily.empty else 1
-        room_merged['预期总间夜'] = room_merged['每日总房量'] * analysis_days
-        room_merged['综合去化率(%)'] = (room_merged['房间数'] / room_merged['预期总间夜'] * 100).round(1)
         
-        fig_room_bar = px.bar(room_merged, x='综合去化率(%)', y='预约房型', orientation='h', text='综合去化率(%)', title="各房型综合去化率")
-        fig_room_bar.update_traces(texttemplate='%{text}%', textposition='outside')
-        st.plotly_chart(fig_room_bar, use_container_width=True)
+        # --- 数据清洗 ---
+        # 1. 清除列名空格
+        df.columns = [str(c).strip() for c in df.columns]
+        
+        # 2. 检查关键列是否存在
+        required_cols = ['预约房型', '入住日期', '离店日期', '预约状态', '商品ID', '商品名称']
+        missing = [c for c in required_cols if c not in df.columns]
+        if missing:
+            st.error(f"表格缺少必要列: {missing}")
+            st.info(f"当前表格列名: {list(df.columns)}")
+            st.stop()
 
-    # 房型文字总结
-    top_room = room_sales.loc[room_sales['房间数'].idxmax()]
-    st.info(f"💡 **房型分析总结：** 卖得最好的房型是 **{top_room['预约房型']}**，共售出 {top_room['房间数']} 个间夜。结合去化率图表，若某房型去化率远低于平均值，建议在接下来的套餐设计中增加该房型的搭售或升级优惠。")
+        # 3. 日期格式化
+        df['入住日期'] = pd.to_datetime(df['入住日期'], errors='coerce')
+        df['离店日期'] = pd.to_datetime(df['离店日期'], errors='coerce')
+        df = df.dropna(subset=['入住日期', '离店日期', '预约房型'])
 
-    st.divider()
+        # 4. 提取房间数
+        def get_rooms(x):
+            if pd.isna(x): return 1
+            res = re.search(r'(\d+)间', str(x))
+            return int(res.group(1)) if res else 1
+        df['房间数'] = df['间晚'].apply(get_rooms) if '间晚' in df.columns else 1
 
-    # 板块 3: 星期与节假日规律分析
-    st.header("📅 入住星期规律分析")
-    weekday_order = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
-    weekday_sales = df_daily.groupby('星期')['房间数'].sum().reindex(weekday_order).reset_index().dropna()
-    
-    fig_week = px.bar(weekday_sales, x='星期', y='房间数', text='房间数', title="一周各天入住间夜量分布", color='房间数', color_continuous_scale='Blues')
-    fig_week.update_traces(textposition='outside')
-    st.plotly_chart(fig_week, use_container_width=True)
+        # --- 侧边栏配置 ---
+        st.sidebar.divider()
+        st.sidebar.header("⚙️ 运营参数配置")
+        
+        # 房型库存配置
+        st.sidebar.subheader("1. 房型库存设置")
+        unique_rooms = df['预约房型'].unique()
+        inventory_init = pd.DataFrame({"预约房型": unique_rooms, "每日库存": [10]*len(unique_rooms)})
+        edited_inventory = st.sidebar.data_editor(inventory_init, hide_index=True)
+        inventory_dict = dict(zip(edited_inventory['预约房型'], edited_inventory['每日库存']))
+        total_capacity = edited_inventory['每日库存'].sum()
 
-    # 星期总结
-    top_weekday = weekday_sales.loc[weekday_sales['房间数'].idxmax()]
-    bottom_weekday = weekday_sales.loc[weekday_sales['房间数'].idxmin()]
-    st.info(f"💡 **入住时机总结：** 订单主要集中在 **{top_weekday['星期']}**（共 {top_weekday['房间数']} 间夜），而 **{bottom_weekday['星期']}** 最为冷清。建议针对低谷星期推出“连住优惠”或“错峰体验活动”。")
+        # 套餐简称配置 (按商品ID)
+        st.sidebar.subheader("2. 套餐简称设置")
+        unique_pkgs = df[['商品ID', '商品名称']].drop_duplicates()
+        unique_pkgs['简称'] = unique_pkgs['商品名称'].apply(lambda x: str(x)[:10] + '...')
+        edited_pkgs = st.sidebar.data_editor(unique_pkgs, hide_index=True, disabled=['商品ID', '商品名称'])
+        pkg_map = dict(zip(edited_pkgs['商品ID'], edited_pkgs['简称']))
+        df['套餐简称'] = df['商品ID'].map(pkg_map)
 
-    st.divider()
+        # --- 核心计算：日期爆炸拆解 ---
+        # 只统计“预约成功”的订单用于计算OCC
+        df_active = df[df['预约状态'] == '预约成功'].copy()
+        expanded_data = []
+        for _, row in df_active.iterrows():
+            days = (row['离店日期'] - row['入住日期']).days
+            if days > 0:
+                for i in range(days):
+                    curr_date = row['入住日期'] + pd.Timedelta(days=i)
+                    expanded_data.append({
+                        '日期': curr_date,
+                        '房型': row['预约房型'],
+                        '房间数': row['房间数'],
+                        '星期': curr_date.day_name(),
+                        '套餐': row['套餐简称']
+                    })
+        
+        if not expanded_data:
+            st.warning("暂无有效的预约成功订单。")
+            st.stop()
+            
+        df_daily = pd.DataFrame(expanded_data)
+        
+        # --- 报表呈现 ---
+        
+        # 看板核心指标
+        st.header("📊 核心经营指标")
+        kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+        total_rev = df['用户实付金额'].sum()
+        total_nights = df_daily['房间数'].sum()
+        avg_occ = (total_nights / (df_daily['日期'].nunique() * total_capacity) * 100) if total_capacity > 0 else 0
+        
+        kpi1.metric("总销售额", f"¥{total_rev:,.2f}")
+        kpi2.metric("总预约成功间夜", f"{total_nights} 间夜")
+        kpi3.metric("周期内平均OCC", f"{avg_occ:.1f}%")
+        kpi4.metric("覆盖日期天数", f"{df_daily['日期'].nunique()} 天")
 
-    # 板块 4: 套餐 (商品ID) 分析
-    st.header("🎁 套餐(商品ID) 转化分析")
-    package_sales = df_valid.groupby('套餐简称').agg(
-        订单量=('订单ID', 'count'),
-        实付总额=('用户实付金额', 'sum')
-    ).reset_index().sort_values(by='订单量', ascending=False)
+        st.divider()
 
-    col_pkg1, col_pkg2 = st.columns(2)
-    with col_pkg1:
-        fig_pkg_bar = px.bar(package_sales, x='订单量', y='套餐简称', orientation='h', text='订单量', title="各套餐(简称) 售出单量")
-        fig_pkg_bar.update_traces(textposition='outside')
-        st.plotly_chart(fig_pkg_bar, use_container_width=True)
-    with col_pkg2:
-        fig_pkg_rev = px.pie(package_sales, names='套餐简称', values='实付总额', hole=0.3, title="各套餐(简称) 营收占比")
-        fig_pkg_rev.update_traces(textinfo='percent+label')
-        st.plotly_chart(fig_pkg_rev, use_container_width=True)
+        # 图表展示
+        tab1, tab2, tab3 = st.tabs(["📉 每日OCC与房型分析", "📅 周期/星期规律", "🎁 套餐转化分析"])
 
-    # 套餐总结
-    top_pkg = package_sales.iloc[0]
-    st.info(f"💡 **套餐分析总结：** 按照商品ID归类，爆款套餐为 **{top_pkg['套餐简称']}**，共售出 {top_pkg['订单量']} 单，是营收的主要贡献点。建议保留其核心卖点（如包含的特定游乐项目/餐饮），并复制到冷门房型的套餐中。")
+        with tab1:
+            st.subheader("每日入住率(OCC)趋势")
+            occ_trend = df_daily.groupby('日期')['房间数'].sum().reset_index()
+            occ_trend['OCC%'] = (occ_trend['房间数'] / total_capacity * 100).round(1)
+            fig_occ = px.line(occ_trend, x='日期', y='OCC%', text='OCC%', markers=True, 
+                             title=f"全店每日OCC趋势 (总库存:{total_capacity})")
+            fig_occ.update_traces(textposition="top center")
+            st.plotly_chart(fig_occ, use_container_width=True)
+            
+            st.subheader("各房型去化情况")
+            room_analysis = df_daily.groupby('房型')['房间数'].sum().reset_index()
+            fig_room = px.pie(room_analysis, names='房型', values='房间数', hole=0.4, title="房型售卖占比")
+            fig_room.update_traces(textinfo='percent+label')
+            st.plotly_chart(fig_room, use_container_width=True)
+
+        with tab2:
+            st.subheader("星期分布规律")
+            week_map = {'Monday':'周一','Tuesday':'周二','Wednesday':'周三','Thursday':'周四','Friday':'周五','Saturday':'周六','Sunday':'周日'}
+            df_daily['星期中文'] = df_daily['星期'].map(week_map)
+            week_order = ['周一','周二','周三','周四','周五','周六','周日']
+            week_data = df_daily.groupby('星期中文')['房间数'].sum().reindex(week_order).reset_index()
+            fig_week = px.bar(week_data, x='星期中文', y='房间数', color='房间数', title="一周内入住热度分布")
+            st.plotly_chart(fig_week, use_container_width=True)
+            
+            st.info(f"💡 **分析提示：** 数据显示 **{week_data.loc[week_data['房间数'].idxmax(), '星期中文']}** 是入住高峰期。建议针对低谷日推出特惠。")
+
+        with tab3:
+            st.subheader("套餐(按商品ID归类)售卖排行")
+            pkg_analysis = df.groupby('套餐简称').agg({'订单ID':'count', '用户实付金额':'sum'}).reset_index()
+            pkg_analysis = pkg_analysis.sort_values('订单ID', ascending=False)
+            
+            col_a, col_b = st.columns(2)
+            with col_a:
+                fig_p1 = px.bar(pkg_analysis, x='订单ID', y='套餐简称', orientation='h', title="套餐单量榜")
+                st.plotly_chart(fig_p1, use_container_width=True)
+            with col_b:
+                fig_p2 = px.pie(pkg_analysis, names='套餐简称', values='用户实付金额', title="套餐营收贡献")
+                st.plotly_chart(fig_p2, use_container_width=True)
+
+        # 数据明细
+        with st.expander("查看清洗后的数据明细"):
+            st.dataframe(df)
+
+    except Exception as e:
+        st.error(f"处理数据时出错: {e}")
+        st.exception(e)
 
 else:
-    st.info("💡 请在左侧侧边栏上传 CSV 文件，然后配置房型库存和套餐简称，即可查看深度分析。")
+    st.info("👋 请在左侧侧边栏上传您的酒店预约明细文件 (支持 .xlsx 或 .csv)")
